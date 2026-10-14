@@ -12,6 +12,7 @@ const NAV: { key: View; ico: string; label: string }[] = [
   { key: 'bank', ico: '🗂️', label: '草稿箱 / 题库' },
   { key: 'quiz', ico: '⏱️', label: '测验' },
   { key: 'report', ico: '📊', label: '成绩单' },
+  { key: 'wrong', ico: '📕', label: '错题本' },
   { key: 'qa', ico: '💬', label: '答疑' },
   { key: 'models', ico: '🤖', label: '模型管理' },
   { key: 'tasks', ico: '🖥️', label: '任务中心' },

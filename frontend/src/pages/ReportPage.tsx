@@ -5,6 +5,7 @@ import type { View } from '../App'
 import { QTYPE_LABEL } from '../types'
 
 interface ReportItem {
+  answer_id: string
   question_id: string
   type: string
   stem: string
@@ -14,7 +15,13 @@ interface ReportItem {
   user_answer: string
   is_correct: boolean | null
   ai_score: number | null
-  ai_feedback: Record<string, unknown> | null
+  ai_feedback: {
+    max_score?: number
+    points?: { desc: string; obtained: number }[]
+    deductions?: { reason: string; points: number }[]
+    suggestions?: string[]
+    [k: string]: unknown
+  } | null
 }
 
 export default function ReportPage({ go }: { go: (v: View) => void }) {
@@ -103,6 +110,24 @@ export default function ReportPage({ go }: { go: (v: View) => void }) {
                 <div className="fb-text">
                   你的答案：<b>{it.user_answer || '（未作答）'}</b><br />
                   {it.is_correct === false && <>参考答案：<b>{it.answer}</b><br />{(it.ai_feedback?.explanation as string) || it.explanation ? `解析：${(it.ai_feedback?.explanation as string) || it.explanation}` : ''}</>}
+                  {/* 主观题阅卷反馈（P2） */}
+                  {(it.type === 'short' || it.type === 'calc' || it.type === 'essay') && it.ai_feedback && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontWeight: 600 }}>
+                        AI 阅卷：{it.ai_score ?? '—'} / {it.ai_feedback.max_score ?? '—'} 分
+                        {it.ai_score == null && <span className="tag warn" style={{ marginLeft: 8 }}>待阅卷</span>}
+                      </div>
+                      {it.ai_feedback.points?.map((p, j) => (
+                        <div key={j} style={{ color: 'var(--ok)', fontSize: 12.5 }}>✓ {p.desc}（+{p.obtained}）</div>
+                      ))}
+                      {it.ai_feedback.deductions?.map((d, j) => (
+                        <div key={j} style={{ color: 'var(--danger)', fontSize: 12.5 }}>✗ {d.reason}（-{d.points}）</div>
+                      ))}
+                      {it.ai_feedback.suggestions?.map((s, j) => (
+                        <div key={j} style={{ color: 'var(--muted)', fontSize: 12.5 }}>💡 {s}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

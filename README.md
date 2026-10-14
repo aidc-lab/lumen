@@ -23,28 +23,24 @@ Python sidecar（FastAPI，仅监听 127.0.0.1:随机端口，令牌认证）
 ## 快速开始（开发）
 
 ```bash
-# 1. 后端
-cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-# 2. 前端
-cd ../frontend
-npm install
-
-# 3a. 方式一：Electron 桌面应用（推荐）
-cd ../electron
-npm install
-npm start          # 自动拉起 sidecar + 加载前端构建产物
-
-# 3b. 方式二：纯 Web 开发模式
-cd ../backend && .venv/bin/python run.py     # 记下 stdout 的端口与令牌
-cd ../frontend
-VITE_LUMEN_PORT=<端口> VITE_LUMEN_TOKEN=<令牌> npm run dev
+make install        # 安装全部依赖（后端 venv + 前端 + electron）
+make dev            # 一键启动：mock LLM + sidecar + 前端（开发模式）
+make stop           # 停止 make dev 启动的进程
+make test           # 后端测试
+make e2e            # E2E 集成测试（需 make mock + make start-sidecar）
+make build-frontend # 构建前端（生产）
+make start-electron # 启动桌面应用（自动先构建前端）
 ```
 
-> 注意： Electron 方式需先构建前端：`cd frontend && npm run build`。
-> sidecar 端口与令牌写入 `~/Library/Application Support/lumen/sidecar.json`（macOS）。
+> `make dev` 中的 mock LLM 仅用于测试；真实环境请在「模型管理」中配置
+> 云端 API（自带 Key）或自建 Ollama/LM Studio。
+
+```bash
+# 手动分步（等价于 make dev）：
+make mock           # 终端 1：模拟 LLM（端口 18100）
+make start-sidecar  # 终端 2：sidecar（stdout 打印端口与令牌）
+make dev-frontend   # 终端 3：前端开发服务器（/api 代理到 sidecar）
+```
 
 ## P0 已实现
 
@@ -60,11 +56,20 @@ VITE_LUMEN_PORT=<端口> VITE_LUMEN_TOKEN=<令牌> npm run dev
 - 测验：组卷、作答、客观题自动判分（主观题 AI 阅卷为 P2）
 - 生产模式：sidecar 托管 `frontend/dist`，Electron 直接加载
 
+## P2 已实现
+
+- 主观题 AI 阅卷：提交答卷后异步批改（得分点 / 扣分 / 建议），支持手动重评
+- 教案生成：多版本管理
+- 试卷导出：Markdown（PDF 需安装 Typst：`brew install typst`）
+- 任务级默认模型：设置页为每个任务指定默认模型（答疑/总结/出题/阅卷/教案/向量化）
+- 错题本雏形：按课程聚合判错题目，按错误次数排序
+
 ## 验证状态
 
-- 后端 E2E 集成测试 31 项全部通过（`backend/tests/test_e2e.py`，含模拟 LLM 服务 `tests/mock_llm.py`）
+- 后端 E2E 集成测试全部通过（`backend/tests/test_e2e.py`，含模拟 LLM 服务 `tests/mock_llm.py`）
 - 前端 `tsc -b && vite build` 通过
 - 生产模式静态托管验证通过（GET / 返回 SPA、/api/v1 路由优先）
+- Makefile 全部目标验证通过（`make help` / `test` / `e2e` / `build-frontend`）
 
 ## 目录结构
 

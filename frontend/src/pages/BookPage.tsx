@@ -17,6 +17,7 @@ export default function BookPage({ go }: Props) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const [cur, setCur] = useState<string | null>(null)
   const [summaries, setSummaries] = useState<{ id: string; content: string; version: number }[]>([])
+  const [plans, setPlans] = useState<{ id: string; content: string; version: number }[]>([])
 
   useEffect(() => {
     ;(async () => {
@@ -45,6 +46,10 @@ export default function BookPage({ go }: Props) {
       `/api/v1/chapters/${id}/summaries`
     )
     setSummaries(s)
+    const p = await api.get<{ id: string; content: string; version: number }[]>(
+      `/api/v1/chapters/${id}/lesson-plans`
+    )
+    setPlans(p)
   }
 
   const tree = useMemo(() => {
@@ -77,6 +82,14 @@ export default function BookPage({ go }: Props) {
             go('tasks')
           } catch (e) { toast('生成失败：' + (e as Error).message) }
         }}>📝 总结</button>
+        <button className="btn btn-sm" onClick={async () => {
+          if (!cur) return toast('请先选择章节')
+          try {
+            const t = await api.post<{ id: string }>('/api/v1/lesson-plans/generate', { chapter_id: cur })
+            toast('教案任务已提交 → 任务中心')
+            go('tasks')
+          } catch (e) { toast('生成失败：' + (e as Error).message) }
+        }}>📚 教案</button>
         <button className="btn btn-sm" onClick={() => go('qa')}>💬 答疑</button>
         <button className="btn btn-sm" onClick={() => go('quiz')}>⏱️ 测验</button>
       </div>
@@ -139,6 +152,18 @@ export default function BookPage({ go }: Props) {
                   {summaries.map((s) => (
                     <div className="para" key={s.id}>
                       <div className="ptext" style={{ whiteSpace: 'pre-wrap' }}>{s.content}</div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {plans.length > 0 && (
+                <>
+                  <div className="content-head" style={{ borderTop: '1px solid var(--border)' }}>
+                    <h2 style={{ fontSize: 15 }}>📚 教案（{plans.length} 版本）</h2>
+                  </div>
+                  {plans.map((p) => (
+                    <div className="para" key={p.id}>
+                      <div className="ptext" style={{ whiteSpace: 'pre-wrap' }}>{p.content}</div>
                     </div>
                   ))}
                 </>

@@ -11,10 +11,11 @@ import QAPage from './pages/QAPage'
 import ModelsPage from './pages/ModelsPage'
 import TasksPage from './pages/TasksPage'
 import SettingsPage from './pages/SettingsPage'
+import WrongPage from './pages/WrongPage'
 
 export type View =
   | 'home' | 'book' | 'wizard' | 'bank' | 'quiz' | 'report'
-  | 'qa' | 'models' | 'tasks' | 'settings'
+  | 'qa' | 'models' | 'tasks' | 'settings' | 'wrong'
 
 interface ToastMsg {
   id: number
@@ -56,6 +57,7 @@ export default function App() {
     models: <ModelsPage />,
     tasks: <TasksPage />,
     settings: <SettingsPage />,
+    wrong: <WrongPage />,
   }
 
   return (

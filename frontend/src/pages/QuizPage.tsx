@@ -80,12 +80,16 @@ export default function QuizPage({ go }: Props) {
       answers[q.id] = Array.isArray(q.user_answer) ? q.user_answer.join(',') : (q.user_answer ?? '')
     }
     try {
-      const r = await api.post<{ attempt_id: string; score: number; total_score: number }>(
+      const r = await api.post<{ attempt_id: string; score: number; total_score: number; grading_task_id?: string }>(
         `/api/v1/attempts/${attemptId}/submit`, answers
       )
       setResult({ score: r.score, total_score: r.total_score })
       sessionStorage.setItem('lumen-last-attempt', attemptId)
-      toast(`已提交：客观题 ${r.score}/${r.total_score} 分，主观题待 AI 阅卷（P2）`)
+      if (r.grading_task_id) {
+        toast(`客观题 ${r.score} 分；主观题 AI 阅卷中 → 任务中心`)
+      } else {
+        toast(`已提交：${r.score}/${r.total_score} 分`)
+      }
       go('report')
     } catch (e) { toast('提交失败：' + (e as Error).message) }
   }

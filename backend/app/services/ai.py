@@ -7,11 +7,14 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.db import SessionLocal
-from app.models import Chapter, Exercise, Message, Model, PromptTemplate, Session, Summary, Textbook
+from app.models import (Answer, Attempt, Chapter, Exercise, LessonPlan,
+                        Message, Model, PaperQuestion, PromptTemplate,
+                        Session, Summary, Textbook)
 from app.services import llm
 from app.services.indexing import hybrid_search
 from app.services.llm import LLMError, extract_json
@@ -35,11 +38,19 @@ async def get_default_model(db, task_type: str, capability: str = "text") -> Mod
 
 
 async def resolve_model(db, model_id: str | None, task_type: str, capability: str = "text") -> Model:
+    """模型解析优先级：显式指定 > 设置页任务级默认 > 首个具备能力的模型。"""
     if model_id:
         m = db.get(Model, model_id)
         if m is None:
             raise ValueError(f"模型不存在: {model_id}")
         return m
+    # 任务级默认模型（设置页「模型默认策略」）
+    from app.models import Setting
+    srow = db.get(Setting, f"default_model:{task_type}")
+    if srow:
+        m = db.get(Model, srow.value)
+        if m is not None and capability in (m.capabilities or []):
+            return m
     m = await get_default_model(db, task_type, capability)
     if m is None:
         raise ValueError("未配置可用模型：请先在「模型管理」中添加（云端 API 或自建 Ollama/LM Studio）")
@@ -92,6 +103,12 @@ DEFAULT_PROMPTS = {
         "\"points\": [{\"desc\": \"得分点\", \"obtained\": 得分}], "
         "\"deductions\": [{\"reason\": \"扣分原因\", \"points\": 扣分}], "
         "\"suggestions\": [\"改进建议\"]}。\n要求：严格按得分点给分，理由具体。"
+    ),
+    "lesson": (
+        "你是教学专家。请为下面的教材章节设计一份教案（Markdown）：\n"
+        "## 教学目标（可测量）\n## 重点与难点\n"
+        "## 教学过程（引入 / 讲解 / 练习 / 小结）\n## 课堂提问\n## 作业布置\n"
+        "要求：提问与练习紧扣教材内容，可用教材原文作答。"
     ),
 }
 
@@ -361,3 +378,123 @@ async def answer_stream(session_id: str, question: str, model_id: str | None = N
             "tokens_out": usage.get("completion_tokens", 0),
             "model_id": model.id,
         })
+
+
+# ---------------- 主观题 AI 阅卷 ----------------
+async def grade_answer(model: Model, question: dict, user_answer: str,
+                       max_score: int) -> tuple[dict, dict]:
+    """主观题阅卷：结构化 JSON 评分。返回 (评分结果, token 用量)。"""
+    prompt = await _grade_prompt(None)
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": (
+            f"题目：{question['stem']}\n"
+            f"参考答案：{question.get('answer', '')}\n"
+            f"解析：{question.get('explanation', '')}\n"
+            f"满分：{max_score} 分\n"
+            f"学生作答：{user_answer or '（未作答）'}")},
+    ]
+    try:
+        out, usage = await llm.chat(model, messages, temperature=0.2,
+                                       response_json=True)
+        result = extract_json(out)
+    except LLMError:
+        # 部分本地模型不支持 response_format，降级为文本提取
+        out, usage = await llm.chat(model, messages, temperature=0.2)
+        result = extract_json(out)
+    # 校验与修正
+    score = int(result.get("score", 0))
+    result["score"] = max(0, min(max_score, score))
+    result["max_score"] = max_score
+    result.setdefault("points", [])
+    result.setdefault("deductions", [])
+    result.setdefault("suggestions", [])
+    return result, usage
+
+
+async def _grade_prompt(db) -> str:
+    if db is not None:
+        return await get_prompt(db, "grade")
+    return DEFAULT_PROMPTS.get("grade", "")
+
+
+async def run_grading(job, attempt_id: str) -> str:
+    """阅卷任务：批改某次作答的全部主观题并更新总分。"""
+    with SessionLocal() as db:
+        attempt = db.get(Attempt, attempt_id)
+        if attempt is None:
+            raise ValueError(f"作答记录不存在: {attempt_id}")
+        answers = list(db.scalars(
+            select(Answer).where(Answer.attempt_id == attempt_id)))
+        subjective = [a for a in answers if a.is_correct is None]
+        if not subjective:
+            return attempt_id
+        model = await resolve_model(db, None, "阅卷")
+        job.model_id = model.id
+        total = 0
+        for i, ans in enumerate(subjective):
+            job.check_cancelled()
+            ex = db.get(Exercise, ans.question_id)
+            pq = db.get(PaperQuestion,
+                        (attempt.paper_id, ans.question_id))
+            max_score = pq.score if pq else 10
+            job.set_progress((i / len(subjective)) * 90,
+                             f"批改第 {i + 1}/{len(subjective)} 题…")
+            question = {"stem": ex.stem if ex else "",
+                        "answer": ex.answer if ex else "",
+                        "explanation": ex.explanation if ex else ""}
+            try:
+                result, usage = await grade_answer(model, question, ans.content,
+                                                     max_score)
+                job.tokens_in += usage.get("prompt_tokens", 0)
+                job.tokens_out += usage.get("completion_tokens", 0)
+            except Exception as e:
+                job.log(f"⚠ 第 {i + 1} 题阅卷失败：{e}", "warn")
+                result = {"score": 0, "max_score": max_score,
+                          "points": [], "deductions": [],
+                          "suggestions": [f"阅卷失败：{e}"]}
+            ans.ai_score = result["score"]
+            ans.ai_feedback = result
+            ans.is_correct = result["score"] >= result["max_score"] * 0.6
+            ans.regraded_at = datetime.utcnow()
+            total += result["score"]
+        # 总分 = 客观题 + 主观题
+        obj_total = sum(a.ai_score or 0 for a in answers
+                        if a.is_correct is not None)
+        attempt.score = obj_total + total
+        attempt.status = "graded"
+        db.commit()
+        job.set_progress(100, f"阅卷完成：主观题 {total} 分")
+        return attempt_id
+
+
+# ---------------- 教案生成 ----------------
+async def generate_lesson_plan(job, chapter_id: str,
+                               model_id: str | None = None) -> str:
+    with SessionLocal() as db:
+        chapter = db.get(Chapter, chapter_id)
+        if chapter is None:
+            raise ValueError(f"章节不存在: {chapter_id}")
+        textbook = db.get(Textbook, chapter.textbook_id)
+        model = await resolve_model(db, model_id, "教案")
+        job.model_id = model.id
+        prompt = await get_prompt(db, "lesson")
+        content = _truncate(chapter.content, _budget_chars(model))
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": (
+                f"教材：《{textbook.title}》\n章节：{chapter.title}\n\n{content}")},
+        ]
+        job.set_progress(30, "正在生成教案…")
+        content_out, usage = await llm.chat(model, messages, temperature=0.5)
+        job.tokens_in = usage.get("prompt_tokens", 0)
+        job.tokens_out = usage.get("completion_tokens", 0)
+        version = 1 + (db.scalar(select(func.count())
+                                   .where(LessonPlan.chapter_id == chapter_id)) or 0)
+        row = LessonPlan(id=uuid.uuid4().hex, chapter_id=chapter_id,
+                           content=content_out, model_id=model.id, version=version,
+                           params={"model": model.name})
+        db.add(row)
+        db.commit()
+        job.result_ref = row.id
+        return row.id

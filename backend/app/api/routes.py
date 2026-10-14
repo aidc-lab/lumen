@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import FILES_DIR
 from app.core.db import SessionLocal, VEC_AVAILABLE
@@ -424,10 +424,22 @@ def submit_attempt(attempt_id: str, answers: dict[str, str]):
         attempt.status = "submitted"
         attempt.finished_at = datetime.utcnow()
         db.commit()
+        # 主观题：异步创建 AI 阅卷任务（P2）
+        has_subjective = any(
+            a.is_correct is None for a in db.scalars(
+                select(Answer).where(Answer.attempt_id == attempt_id)))
+        grading_task_id = None
+        if has_subjective:
+            gjob = jobs.create("AI 阅卷", {"attempt_id": attempt_id},
+                                 lambda j: ai.run_grading(j, attempt_id))
+            grading_task_id = gjob.id
         paper = db.get(Paper, attempt.paper_id)
-        return {"attempt_id": attempt.id, "score": total,
-                "total_score": paper.total_score if paper else None,
-                "status": attempt.status}
+        result = {"attempt_id": attempt.id, "score": total,
+                  "total_score": paper.total_score if paper else None,
+                  "status": attempt.status}
+        if grading_task_id:
+            result["grading_task_id"] = grading_task_id
+        return result
 
 
 @router.get("/attempts/{attempt_id}/report")
@@ -441,6 +453,7 @@ def attempt_report(attempt_id: str):
         for a in answers:
             ex = db.get(Exercise, a.question_id)
             items.append({
+                "answer_id": a.id,
                 "question_id": ex.id, "type": ex.type, "stem": ex.stem,
                 "options": ex.options, "answer": ex.answer, "explanation": ex.explanation,
                 "user_answer": a.content, "is_correct": a.is_correct,
@@ -450,7 +463,161 @@ def attempt_report(attempt_id: str):
                 "status": attempt.status, "items": items}
 
 
-# ============ 答疑会话 ============
+# ============ 阅卷（P2） ============
+@router.patch("/answers/{answer_id}/regrade")
+async def regrade_answer(answer_id: str):
+    """手动重评单题（主观题）。"""
+    with SessionLocal() as db:
+        ans = db.get(Answer, answer_id)
+        if ans is None:
+            raise _err("E_NOT_FOUND", f"作答不存在: {answer_id}", 404)
+        ex = db.get(Exercise, ans.question_id)
+        if ex is None:
+            raise _err("E_STATE", "题目不存在", 409)
+        attempt = db.get(Attempt, ans.attempt_id)
+        pq = db.get(PaperQuestion, (attempt.paper_id, ans.question_id)) \
+            if attempt else None
+        max_score = pq.score if pq else 10
+        model = await ai.resolve_model(db, None, "阅卷")
+        question = {"stem": ex.stem, "answer": ex.answer,
+                    "explanation": ex.explanation}
+        result, _usage = await ai.grade_answer(model, question, ans.content,
+                                         max_score)
+        ans.ai_score = result["score"]
+        ans.ai_feedback = result
+        ans.is_correct = result["score"] >= max_score * 0.6
+        ans.regraded_at = datetime.utcnow()
+        # 重算总分
+        answers = list(db.scalars(
+            select(Answer).where(Answer.attempt_id == ans.attempt_id)))
+        attempt.score = sum(a.ai_score or 0 for a in answers)
+        db.commit()
+        return {"answer_id": ans.id, **result}
+
+
+# ============ 教案生成（P2） ============
+@router.post("/lesson-plans/generate", response_model=TaskOut, status_code=202)
+def generate_lesson_plan(body: SummaryGenerate):
+    with SessionLocal() as db:
+        ch = db.get(Chapter, body.chapter_id)
+        if ch is None:
+            raise _err("E_NOT_FOUND", f"章节不存在: {body.chapter_id}", 404)
+        job = jobs.create("教案生成", {"chapter_id": body.chapter_id},
+                          lambda j: ai.generate_lesson_plan(
+                              j, body.chapter_id, body.model_id),
+                          model_id=body.model_id or "")
+        return _job_to_task(job)
+
+
+@router.get("/chapters/{chapter_id}/lesson-plans")
+def list_lesson_plans(chapter_id: str):
+    with SessionLocal() as db:
+        rows = list(db.scalars(
+            select(LessonPlan).where(LessonPlan.chapter_id == chapter_id)
+            .order_by(LessonPlan.version.desc())))
+        return [{"id": r.id, "chapter_id": r.chapter_id, "content": r.content,
+                 "version": r.version, "model_id": r.model_id,
+                 "created_at": r.created_at.isoformat()} for r in rows]
+
+
+# ============ 试卷导出（P2） ============
+@router.get("/papers/{paper_id}/export")
+def export_paper(paper_id: str, format: str = "md",
+                 include_answers: bool = False):
+    """导出试卷：md（Markdown）/ pdf（需安装 Typst）。"""
+    import shutil as _shutil
+    import subprocess
+
+    with SessionLocal() as db:
+        paper = db.get(Paper, paper_id)
+        if paper is None:
+            raise _err("E_NOT_FOUND", f"试卷不存在: {paper_id}", 404)
+        rows = list(db.scalars(select(PaperQuestion)
+                                 .where(PaperQuestion.paper_id == paper_id)
+                                 .order_by(PaperQuestion.order)))
+        lines = [f"# {paper.title}", "",
+                 f"满分 {paper.total_score} 分 · 建议用时 {paper.duration_min} 分钟", ""]
+        for i, pq in enumerate(rows, 1):
+            ex = db.get(Exercise, pq.exercise_id)
+            if ex is None:
+                continue
+            type_label = {"single": "单选题", "multi": "多选题",
+                          "judge": "判断题", "fill": "填空题",
+                          "short": "简答题", "calc": "计算题",
+                          "essay": "论述题"}.get(ex.type, ex.type)
+            lines.append(f"## 第 {i} 题（{type_label} · {pq.score} 分）")
+            lines.append("")
+            lines.append(ex.stem)
+            lines.append("")
+            if isinstance(ex.options, list) and ex.options:
+                for opt in ex.options:
+                    lines.append(f"- {opt}")
+                lines.append("")
+            if include_answers:
+                lines.append(f"**参考答案：** {ex.answer}")
+                if ex.explanation:
+                    lines.append(f"**解析：** {ex.explanation}")
+                lines.append("")
+            else:
+                lines.append("作答：______________")
+                lines.append("")
+        content = "\n".join(lines)
+
+        if format == "md":
+            dest = FILES_DIR / f"paper-{paper_id}.md"
+            dest.write_text(content, encoding="utf-8")
+            return {"format": "md", "path": str(dest), "content": content}
+
+        if format == "pdf":
+            if not _shutil.which("typst"):
+                raise _err(
+                    "E_UNSUPPORTED",
+                    "未安装 Typst： brew install typst 后重试（或先用 md 格式导出）")
+            typ_file = FILES_DIR / f"paper-{paper_id}.typ"
+            typ_file.write_text(
+                f"#set page(width: 21cm, height: 29.7cm, margin: 2cm)\n"
+                f"{content.replace('#', '=')}", encoding="utf-8")
+            pdf_path = FILES_DIR / f"paper-{paper_id}.pdf"
+            subprocess.run(["typst", "compile", str(typ_file),
+                            str(pdf_path)], check=True, timeout=120)
+            return {"format": "pdf", "path": str(pdf_path)}
+
+        raise _err("E_UNSUPPORTED", f"不支持格式 .{format}（支持 md/pdf）")
+
+
+# ============ 错题本（P2 雏形） ============
+@router.get("/courses/{course_id}/wrong-questions")
+def wrong_questions(course_id: str, limit: int = 100):
+    """错题本：聚合该课程全部作答记录中判错的题目。"""
+    with SessionLocal() as db:
+        paper_ids = [r[0] for r in db.execute(
+            select(Paper.id).where(Paper.course_id == course_id)).all()]
+        if not paper_ids:
+            return {"items": []}
+        attempt_ids = [r[0] for r in db.execute(
+            select(Attempt.id).where(Attempt.paper_id.in_(paper_ids))).all()]
+        if not attempt_ids:
+            return {"items": []}
+        rows = db.execute(
+            select(Answer.question_id, func.count().label("errs"))
+            .where(Answer.attempt_id.in_(attempt_ids),
+                   Answer.is_correct == False)
+            .group_by(Answer.question_id)
+            .order_by(func.count().desc())
+            .limit(limit)).all()
+        items = []
+        for qid, errs in rows:
+            ex = db.get(Exercise, qid)
+            if ex is None:
+                continue
+            items.append({
+                "question_id": qid, "type": ex.type, "stem": ex.stem,
+                "options": ex.options, "answer": ex.answer,
+                "explanation": ex.explanation, "wrong_count": errs,
+            })
+        return {"items": items}
+
+
 @router.post("/sessions", response_model=SessionOut, status_code=201)
 def create_session(body: SessionCreate):
     with SessionLocal() as db:

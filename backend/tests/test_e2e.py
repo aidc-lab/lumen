@@ -197,6 +197,65 @@ def test_full_workflow(api):
     st, tasks = api("GET", "/tasks?limit=100")
     check("任务中心记录全部任务", st == 200 and len(tasks) >= 3, f"tasks={len(tasks)}")
 
+    # 11. 主观题 AI 阅卷（P2）
+    st, task = api("POST", "/exercises/generate", {
+        "course_id": course_id, "chapter_ids": [chapters[2]["id"]],
+        "types": {"short": 1}, "difficulty": 3, "model_id": model_id,
+    })
+    task = _wait_task(api, task["id"])
+    check("简答题生成", task["status"] == "completed", task.get("error", ""))
+    st, shorts = api("GET", f"/exercises?course_id={course_id}&status=draft&type=short")
+    check("生成 1 道简答题", st == 200 and len(shorts) == 1, f"got {len(shorts)}")
+    short_q = shorts[0]
+    check("简答题无预设选项", short_q["options"] in (None, []))
+    api("PATCH", f"/exercises/{short_q['id']}", {"status": "published"})
+    st, paper2 = api("POST", "/papers", {
+        "course_id": course_id, "title": "E2E 主观卷",
+        "exercise_ids": [short_q["id"]], "duration_min": 5,
+    })
+    check("主观卷组卷", st == 201 and paper2["count"] == 1)
+    st, attempt3 = api("POST", f"/papers/{paper2['id']}/attempts")
+    check("主观卷作答", st == 201 and attempt3["id"])
+    st, sub = api("POST", f"/attempts/{attempt3['id']}/submit",
+                    {short_q["id"]: "极限就是无限接近的意思。"})
+    check("主观题提交返回阅卷任务", st == 200 and sub.get("grading_task_id"),
+          json.dumps(sub, ensure_ascii=False))
+    gtask = _wait_task(api, sub["grading_task_id"])
+    check("AI 阅卷任务完成", gtask["status"] == "completed", gtask.get("error", ""))
+    check("阅卷记录 token 用量", gtask["tokens_in"] > 0 and gtask["tokens_out"] > 0)
+    st, report3 = api("GET", f"/attempts/{attempt3['id']}/report")
+    item = report3["items"][0]
+    check("主观题已评分（5/10）", item["ai_score"] == 5, f"score={item['ai_score']}")
+    check("主观题判为错误（<60%）", item["is_correct"] is False)
+    check("阅卷反馈含得分点", item["ai_feedback"] and item["ai_feedback"]["points"])
+    # 手动重评（P2）
+    st, regraded = api("PATCH", f"/answers/{item['answer_id']}/regrade")
+    check("手动重评接口", st == 200 and regraded.get("score") == 5,
+          json.dumps(regraded, ensure_ascii=False))
+
+    # 12. 教案生成（P2）
+    st, task = api("POST", "/lesson-plans/generate",
+                   {"chapter_id": chapters[2]["id"], "model_id": model_id})
+    task = _wait_task(api, task["id"])
+    check("教案生成任务完成", task["status"] == "completed", task.get("error", ""))
+    st, plans = api("GET", f"/chapters/{chapters[2]['id']}/lesson-plans")
+    check("教案已保存（1 版本）", st == 200 and len(plans) == 1
+          and "教学目标" in plans[0]["content"])
+
+    # 13. 试卷导出（P2）
+    st, export = api("GET", f"/papers/{paper['id']}/export?format=md")
+    check("试卷导出 Markdown", st == 200 and export.get("content", "").startswith("# "))
+    check("导出内容含题目", "设 f(x)" in export.get("content", ""))
+    st, export_a = api("GET",
+                       f"/papers/{paper['id']}/export?format=md&include_answers=true")
+    check("导出含参考答案", "参考答案" in export_a.get("content", ""))
+
+    # 14. 错题本（P2 雏形）
+    st, wrong = api("GET", f"/courses/{course_id}/wrong-questions")
+    check("错题本聚合判错题目", st == 200 and len(wrong["items"]) >= 1,
+          f"items={len(wrong.get('items', []))}")
+    check("错题带来源与解析", wrong["items"] and wrong["items"][0]["explanation"] is not None)
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
