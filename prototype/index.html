@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lumen · 交互原型</title>
+<style>
+/* ============ 基础 ============ */
+* { margin:0; padding:0; box-sizing:border-box; }
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#f8f9fb; --border:#e4e7ec; --border-strong:#d0d5dd;
+  --text:#1d2129; --muted:#6b7280; --faint:#98a2b3;
+  --accent:#4f46e5; --accent-hover:#4338ca; --accent-soft:#eef2ff; --accent-border:#c7d2fe;
+  --ok:#059669; --ok-soft:#d1fae5; --warn:#b45309; --warn-soft:#fef3c7; --danger:#dc2626; --danger-soft:#fee2e2;
+  --radius:10px; --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+[data-theme="dark"]{
+  --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --border:#2a2f3a; --border-strong:#3a4150;
+  --text:#e4e7ec; --muted:#9aa3b2; --faint:#6b7280;
+  --accent:#818cf8; --accent-hover:#a5b4fc; --accent-soft:#232840; --accent-border:#3b4270;
+  --ok:#34d399; --ok-soft:#14352a; --warn:#fbbf24; --warn-soft:#3a2f10; --danger:#f87171; --danger-soft:#3d1a1a;
+  --shadow:0 1px 2px rgba(0,0,0,.3);
+}
+html,body{height:100%;}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit;}
+input,select,textarea{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border-strong);border-radius:8px;padding:7px 10px;outline:none;}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+::-webkit-scrollbar{width:8px;height:8px;}::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:4px;}
+
+/* ============ 布局 ============ */
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;padding:0 16px;position:sticky;top:0;z-index:50;}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;}
+.logo-mark{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:800;}
+.search{flex:1;max-width:420px;display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--faint);}
+.search input{border:none;background:none;flex:1;padding:0;}
+.search input:focus{box-shadow:none;}
+kbd{font-family:var(--mono);font-size:11px;background:var(--panel);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:var(--muted);}
+.app{display:flex;height:calc(100vh - 52px);}
+.rail{width:196px;background:var(--panel);border-right:1px solid var(--border);padding:12px 10px;flex-shrink:0;overflow-y:auto;}
+.rail-group{font-size:11px;color:var(--faint);padding:10px 8px 4px;letter-spacing:.05em;}
+.rail-btn{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:8px;color:var(--muted);font-size:13.5px;text-align:left;}
+.rail-btn:hover{background:var(--panel2);color:var(--text);}
+.rail-btn.active{background:var(--accent-soft);color:var(--accent);font-weight:600;}
+.rail-btn .ico{width:20px;text-align:center;}
+.rail-btn .badge{margin-left:auto;font-size:11px;background:var(--accent-soft);color:var(--accent);border-radius:9px;padding:1px 7px;}
+.main{flex:1;overflow-y:auto;padding:22px 26px;}
+.page-head{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;}
+.page-head h1{font-size:19px;font-weight:700;}
+.page-head .sub{color:var(--muted);font-size:13px;}
+.page-head .spacer{flex:1;}
+
+/* ============ 组件 ============ */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);}
+.card-pad{padding:16px;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;border:1px solid var(--border-strong);background:var(--panel);font-size:13px;color:var(--text);transition:.15s;}
+.btn:hover{border-color:var(--accent);color:var(--accent);}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+.btn-primary:hover{background:var(--accent-hover);color:#fff;}
+.btn-ghost{border-color:transparent;color:var(--muted);}
+.btn-ghost:hover{background:var(--panel2);color:var(--text);}
+.btn-danger:hover{border-color:var(--danger);color:var(--danger);}
+.btn-sm{padding:4px 9px;font-size:12px;border-radius:6px;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.tag{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:2px 8px;border-radius:99px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);}
+.tag.accent{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-border);}
+.tag.ok{background:var(--ok-soft);color:var(--ok);}
+.tag.warn{background:var(--warn-soft);color:var(--warn);}
+.tag.danger{background:var(--danger-soft);color:var(--danger);}
+.qtype{font-size:11.5px;padding:2px 8px;border-radius:6px;font-weight:600;}
+.qtype.single{background:#e0e7ff;color:#3730a3;}.qtype.multi{background:#ccfbf1;color:#0f766e;}
+.qtype.judge{background:#fef9c3;color:#a16207;}.qtype.fill{background:#fce7f3;color:#be185d;}
+.qtype.short,.qtype.calc,.qtype.essay{background:#ede9fe;color:#5b21b6;}
+[data-theme="dark"] .qtype.single{background:#2a2f55;color:#a5b4fc;}[data-theme="dark"] .qtype.multi{background:#0f3a35;color:#5eead4;}
+[data-theme="dark"] .qtype.judge{background:#3a3413;color:#fde047;}[data-theme="dark"] .qtype.fill{background:#3d1a2e;color:#f9a8d4;}
+[data-theme="dark"] .qtype.short,[data-theme="dark"] .qtype.calc,[data-theme="dark"] .qtype.essay{background:#2a2140;color:#c4b5fd;}
+.stars{color:#f59e0b;letter-spacing:1px;font-size:12px;}
+table{width:100%;border-collapse:collapse;}
+th{font-size:12px;color:var(--muted);font-weight:500;text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);}
+td{padding:11px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:var(--panel2);}
+.progress{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;}
+.progress>div{height:100%;background:var(--accent);border-radius:3px;transition:width .4s;}
+.empty{text-align:center;color:var(--faint);padding:48px 0;}
+.divider{height:1px;background:var(--border);margin:14px 0;}
+
+/* 树 */
+.tree{user-select:none;}
+.tree-item{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:7px;cursor:pointer;font-size:13px;color:var(--muted);}
+.tree-item:hover{background:var(--panel2);color:var(--text);}
+.tree-item.active{background:var(--accent-soft);color:var(--accent);font-weight:600;}
+.tree-item .arrow{width:14px;font-size:10px;color:var(--faint);transition:.15s;text-align:center;flex-shrink:0;}
+.tree-item .arrow.open{transform:rotate(90deg);}
+.tree-children{margin-left:15px;border-left:1px solid var(--border);padding-left:6px;}
+.tree-item .meta{margin-left:auto;font-size:11px;color:var(--faint);}
+
+/* Toast */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);padding:9px 18px;border-radius:9px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:999;box-shadow:var(--shadow);}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+/* ============ 首页 ============ */
+.dash-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;}
+.course-card{padding:16px;cursor:pointer;transition:.15s;}
+.course-card:hover{border-color:var(--accent-border);transform:translateY(-1px);}
+.course-card h3{font-size:15px;margin-bottom:4px;}
+.course-card .meta{color:var(--muted);font-size:12px;display:flex;gap:8px;flex-wrap:wrap;}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px;}
+.stat{padding:14px 16px;}
+.stat .num{font-size:22px;font-weight:700;}
+.stat .lbl{color:var(--muted);font-size:12px;}
+.quick{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;}
+
+/* ============ 教材浏览 ============ */
+.book-layout{display:grid;grid-template-columns:280px 1fr;gap:16px;align-items:start;}
+.content-head{padding:18px 20px;border-bottom:1px solid var(--border);}
+.content-head h2{font-size:17px;}
+.content-head .meta{color:var(--muted);font-size:12.5px;margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;}
+.para{padding:12px 20px;border-bottom:1px solid var(--border);display:flex;gap:12px;position:relative;}
+.para:hover{background:var(--panel2);}
+.para .pno{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0;padding-top:3px;width:52px;text-align:right;}
+.para .ptext{flex:1;}
+.para .cite-btn{opacity:0;flex-shrink:0;color:var(--faint);font-size:12px;padding:2px 8px;border-radius:6px;border:1px solid var(--border);}
+.para:hover .cite-btn{opacity:1;}
+.para .cite-btn:hover{color:var(--accent);border-color:var(--accent);}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel2);border-radius:var(--radius) var(--radius) 0 0;}
+
+/* ============ 向导 ============ */
+.wizard-steps{display:flex;gap:0;margin-bottom:22px;}
+.wstep{flex:1;text-align:center;position:relative;padding-top:26px;color:var(--faint);font-size:12.5px;}
+.wstep::before{content:attr(data-n);position:absolute;top:0;left:50%;transform:translateX(-50%);width:22px;height:22px;border-radius:50%;background:var(--panel);border:2px solid var(--border-strong);display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600;z-index:1;}
+.wstep::after{content:"";position:absolute;top:11px;left:calc(-50% + 14px);right:calc(50% + 14px);height:2px;background:var(--border-strong);}
+.wstep:first-child::after{display:none;}
+.wstep.done{color:var(--accent);}.wstep.done::before{background:var(--accent);border-color:var(--accent);color:#fff;}
+.wstep.done::after{background:var(--accent);}
+.wstep.now{color:var(--accent);font-weight:600;}.wstep.now::before{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft);}
+.wizard-body{max-width:720px;}
+.chk{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;margin-bottom:8px;cursor:pointer;transition:.12s;}
+.chk:hover{border-color:var(--accent-border);}
+.chk.checked{border-color:var(--accent);background:var(--accent-soft);}
+.chk input{margin-top:3px;accent-color:var(--accent);}
+.chk .t{font-weight:500;}
+.chk .d{color:var(--muted);font-size:12px;}
+.field-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
+.field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px;}
+.qgen{border:1px solid var(--border);border-radius:9px;padding:14px;margin-bottom:10px;}
+.qgen .stem{font-weight:500;margin-bottom:8px;}
+.qgen .opts{margin-left:8px;color:var(--muted);}
+.qgen .ans{margin-top:8px;font-size:12.5px;color:var(--ok);}
+.qgen .exp{margin-top:4px;font-size:12.5px;color:var(--muted);}
+.qgen .ops{display:flex;gap:6px;margin-top:10px;justify-content:flex-end;}
+
+/* ============ 测验 ============ */
+.quiz-top{display:flex;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap;}
+.timer{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:4px 14px;border-radius:8px;}
+.timer.urgent{color:var(--danger);background:var(--danger-soft);}
+.qnav{display:flex;gap:6px;flex-wrap:wrap;}
+.qnav button{width:30px;height:30px;border-radius:7px;border:1px solid var(--border-strong);font-size:12.5px;color:var(--muted);}
+.qnav button.cur{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);font-weight:600;}
+.qnav button.done{background:var(--ok-soft);color:var(--ok);border-color:transparent;}
+.question-card{padding:22px 24px;margin-bottom:14px;}
+.question-card .qhead{display:flex;gap:10px;align-items:center;margin-bottom:12px;}
+.question-card .stem{font-size:15px;font-weight:500;margin-bottom:14px;line-height:1.7;}
+.opt{display:flex;gap:10px;padding:10px 14px;border:1px solid var(--border);border-radius:9px;margin-bottom:8px;cursor:pointer;transition:.12s;}
+.opt:hover{border-color:var(--accent-border);}
+.opt.sel{border-color:var(--accent);background:var(--accent-soft);}
+.opt .key{width:22px;height:22px;border-radius:50%;border:1px solid var(--border-strong);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);flex-shrink:0;}
+.opt.sel .key{background:var(--accent);border-color:var(--accent);color:#fff;}
+textarea.answer{width:100%;min-height:130px;resize:vertical;line-height:1.7;}
+
+/* ============ 成绩单 ============ */
+.report-grid{display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start;}
+.score-ring{width:150px;height:150px;border-radius:50%;margin:10px auto;display:flex;align-items:center;justify-content:center;flex-direction:column;position:relative;}
+.score-ring::before{content:"";position:absolute;inset:12px;background:var(--panel);border-radius:50%;}
+.score-ring .big{position:relative;font-size:34px;font-weight:800;}
+.score-ring .of{position:relative;color:var(--muted);font-size:12px;}
+.radar-wrap{padding:14px;}
+.radar{width:100%;max-width:340px;display:block;margin:0 auto;}
+.radar-ring{fill:none;stroke:var(--border-strong);stroke-width:1;}
+.radar-axis{stroke:var(--border);stroke-width:1;}
+.radar-poly{fill:var(--accent);fill-opacity:.22;stroke:var(--accent);stroke-width:2;}
+.radar-dot{fill:var(--accent);}
+.radar-label{font-size:10.5px;fill:var(--muted);}
+.radar-score{font-size:11px;font-weight:700;fill:var(--accent);}
+.fb-item{padding:14px 16px;border-bottom:1px solid var(--border);}
+.fb-item:last-child{border-bottom:none;}
+.fb-head{display:flex;gap:10px;align-items:center;margin-bottom:6px;}
+.fb-score{font-weight:700;color:var(--accent);margin-left:auto;font-family:var(--mono);}
+.fb-text{font-size:13px;color:var(--muted);}
+.fb-text b{color:var(--text);font-weight:600;}
+
+/* ============ 答疑 ============ */
+.qa-layout{display:grid;grid-template-columns:250px 1fr;gap:16px;align-items:start;height:calc(100vh - 160px);}
+.qa-side{padding:14px;}
+.qa-side .field{margin-bottom:14px;}
+.qa-side label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;}
+.qa-side select{width:100%;}
+.qa-main{display:flex;flex-direction:column;height:calc(100vh - 160px);}
+.chat{flex:1;overflow-y:auto;padding:18px 20px;}
+.msg{display:flex;gap:10px;margin-bottom:18px;max-width:860px;}
+.msg .avatar{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;}
+.msg.user .avatar{background:var(--accent-soft);color:var(--accent);}
+.msg.ai .avatar{background:var(--ok-soft);color:var(--ok);}
+.msg .body{flex:1;}
+.msg .name{font-size:12px;color:var(--faint);margin-bottom:3px;}
+.bubble{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 14px;line-height:1.75;}
+.msg.user .bubble{background:var(--accent-soft);border-color:var(--accent-border);}
+.cite{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--accent);background:var(--accent-soft);border:1px solid var(--accent-border);border-radius:6px;padding:1px 7px;margin:2px 3px;cursor:pointer;position:relative;}
+.cite .pop{display:none;position:absolute;bottom:calc(100% + 8px);left:0;width:340px;background:var(--panel);border:1px solid var(--border-strong);border-radius:9px;box-shadow:var(--shadow);padding:12px;z-index:20;font-size:12.5px;color:var(--text);line-height:1.7;text-align:left;}
+.cite .pop .src{color:var(--faint);font-size:11px;margin-bottom:6px;}
+.cite:hover .pop{display:block;}
+.composer{border-top:1px solid var(--border);padding:14px 16px;display:flex;gap:10px;align-items:flex-end;}
+.composer textarea{flex:1;min-height:44px;max-height:140px;resize:none;line-height:1.6;}
+.typing span{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--faint);margin-right:4px;animation:blink 1.2s infinite;}
+.typing span:nth-child(2){animation-delay:.2s;}.typing span:nth-child(3){animation-delay:.4s;}
+@keyframes blink{0%,60%,100%{opacity:.3}30%{opacity:1}}
+
+/* ============ 模型管理 ============ */
+.model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px;}
+.model-card{padding:16px;}
+.model-card h4{font-size:14.5px;display:flex;align-items:center;gap:8px;}
+.model-card .url{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin:4px 0 10px;word-break:break-all;}
+.model-card .caps{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px;}
+.model-card .foot{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);}
+.model-card .def{margin-left:auto;}
+
+/* ============ 任务中心 ============ */
+.task-item{padding:16px 18px;margin-bottom:10px;}
+.task-top{display:flex;align-items:center;gap:10px;}
+.task-top .name{font-weight:600;}
+.task-top .ops{margin-left:auto;display:flex;gap:6px;}
+.task-meta{display:flex;gap:14px;color:var(--muted);font-size:12px;margin:8px 0;}
+.task-log{margin-top:10px;background:var(--panel2);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:11.5px;color:var(--muted);max-height:110px;overflow-y:auto;}
+.task-log .ok{color:var(--ok);}.task-log .err{color:var(--danger);}.task-log .warn{color:var(--warn);}
+
+/* ============ 设置 ============ */
+.set-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;align-items:start;}
+.set-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
+.set-row:last-child{border-bottom:none;}
+.set-row .lbl{flex:1;}
+.set-row .lbl .t{font-weight:500;}
+.set-row .lbl .d{font-size:12px;color:var(--muted);}
+.set-row select{min-width:190px;}
+.switch{position:relative;width:38px;height:21px;background:var(--border-strong);border-radius:99px;transition:.15s;flex-shrink:0;}
+.switch::after{content:"";position:absolute;top:2.5px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.15s;}
+.switch.on{background:var(--accent);}
+.switch.on::after{left:19px;}
+
+@media (max-width:1100px){.book-layout,.qa-layout,.report-grid{grid-template-columns:1fr;}.rail{width:64px;}.rail-btn span:last-child,.rail-group{display:none;}}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo"><div class="logo-mark">L</div>lumen <span class="tag accent">原型 v1.1</span></div>
+  <div class="search">🔍 <input placeholder="搜索教材内容、题目、笔记…"><kbd>⌘K</kbd></div>
+  <div class="spacer" style="flex:1"></div>
+  <button class="btn btn-ghost btn-sm" id="themeBtn">🌙 深色</button>
+  <span class="tag">本地模式 · 127.0.0.1</span>
+</header>
+
+<div class="app">
+  <nav class="rail" id="rail"></nav>
+  <main class="main" id="view"></main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ================= 样例数据 ================= */
+const DB = {
+  course: { id:'c1', name:'高等数学（上）', subject:'数学', term:'2026 秋', desc:'同济版教材 + 习题课讲义', created:'2026-09-01' },
+  textbooks: [
+    { id:'t1', title:'高等数学（第七版·上册）', type:'pdf', pages:248, words:'38 万', status:'parsed', structure:'bookmark' },
+    { id:'t2', title:'高等数学习题课讲义', type:'docx', pages:96, words:'12 万', status:'parsed', structure:'styles' },
+  ],
+  chapters: [
+    { id:'ch1', title:'第1章 函数与极限', pages:'p.1-38', words:'5.2 万', children:[
+      { id:'ch1-1', title:'§1.1 函数的概念', pages:'p.1-6' },
+      { id:'ch1-2', title:'§1.2 数列的极限', pages:'p.7-14' },
+      { id:'ch1-3', title:'§1.3 函数的极限（ε-δ 定义）', pages:'p.15-26' },
+      { id:'ch1-4', title:'§1.4 连续与间断', pages:'p.27-38' },
+    ]},
+    { id:'ch2', title:'第2章 导数与微分', pages:'p.39-72', words:'6.1 万', children:[
+      { id:'ch2-1', title:'§2.1 导数概念', pages:'p.39-48' },
+      { id:'ch2-2', title:'§2.2 求导法则', pages:'p.49-60' },
+      { id:'ch2-3', title:'§2.3 高阶导数', pages:'p.61-66' },
+      { id:'ch2-4', title:'§2.4 微分', pages:'p.67-72' },
+    ]},
+    { id:'ch3', title:'第3章 中值定理与导数的应用', pages:'p.73-110', words:'7.4 万', children:[] },
+    { id:'ch4', title:'第4章 不定积分', pages:'p.111-148', words:'6.8 万', children:[] },
+    { id:'ch5', title:'第5章 定积分', pages:'p.149-186', words:'7.0 万', children:[] },
+  ],
+  paras: [
+    { no:1, page:21, sec:'§1.3 函数的极限', text:'设函数 f(x) 在点 x₀ 的某一去心邻域内有定义。如果存在常数 A，对于任意给定的正数 ε（不论它多么小），总存在正数 δ，使得当 x 满足不等式 0 < |x − x₀| < δ 时，对应的函数值 f(x) 都满足不等式 |f(x) − A| < ε，那么常数 A 就叫做函数 f(x) 当 x → x₀ 时的极限，记作 lim(x→x₀) f(x) = A。' },
+    { no:2, page:22, sec:'§1.3 函数的极限', text:'几何意义上，上述定义表明：当 x 充分接近 x₀（但不等于 x₀）时，f(x) 充分接近 A。在 y = f(x) 的图像上，这意味着：对于任意以 A 为中心、宽度为 2ε 的水平带，总存在 x₀ 的一个去心邻域，使得该邻域内的图像全部落在带内。' },
+    { no:3, page:23, sec:'§1.3 函数的极限', text:'注意：极限存在与否与 f(x) 在 x₀ 处是否有定义无关；极限是局部性质，只依赖于 x₀ 附近（去心邻域内）的函数值。单侧极限 x→x₀⁺ 与 x→x₀⁻ 分别定义，二者同时存在且相等是极限存在的充要条件。' },
+    { no:4, page:24, sec:'§1.4 连续与间断', text:'设函数 y = f(x) 在点 x₀ 的某一邻域内有定义，如果 lim(x→x₀) f(x) = f(x₀)，则称 f(x) 在点 x₀ 连续。连续的直观含义是：自变量的微小变化只引起函数值的微小变化，图像在该点处没有"断裂"。' },
+    { no:5, page:25, sec:'§1.4 连续与间断', text:'初等函数在其定义区间内都是连续的。多项式、三角函数、指数函数、对数函数在其定义域内处处连续；严格单调的连续函数必有连续的反函数。' },
+    { no:6, page:26, sec:'§1.4 连续与间断', text:'间断点分为两类：第一类间断点（左右极限都存在，包括可去间断点与跳跃间断点）与第二类间断点（左右极限至少一个不存在，如无穷间断点、振荡间断点）。' },
+  ],
+  exercises: [
+    { id:'e1', type:'single', stem:'设 f(x) = x²，则 f′(1) = ?', options:['A. 0','B. 1','C. 2','D. 不存在'], answer:'C', explanation:'由导数定义 f′(1) = lim[h→0]((1+h)²−1)/h = lim[h→0](2h+h²)/h = 2。', difficulty:2, ref:'《高等数学（上）》第2章 §2.1 p.41¶2', model:'DeepSeek-V3', status:'draft', rating:null },
+    { id:'e2', type:'multi', stem:'下列函数中，在 x = 0 处连续但不可导的是？', options:['A. |x|','B. x²','C. x³','D. sin x'], answer:'A', explanation:'|x| 在 0 处连续但左右导数分别为 −1 与 1，不相等，故不可导；其余选项在 0 处均可导。', difficulty:3, ref:'《高等数学（上）》第2章 §2.1 p.44¶1', model:'DeepSeek-V3', status:'draft', rating:null },
+    { id:'e3', type:'judge', stem:'判断：若函数在某点可导，则它在该点必连续。', options:[], answer:'√', explanation:'可导必连续，连续不一定可导（如 |x| 在 0 处）。', difficulty:1, ref:'《高等数学（上）》第2章 §2.1 p.42¶3', model:'DeepSeek-V3', status:'draft', rating:null },
+    { id:'e4', type:'short', stem:'简述罗尔定理的条件与结论。', options:[], answer:'条件：f(x) 在 [a,b] 上连续、在 (a,b) 内可导、f(a)=f(b)；结论：至少存在一点 ξ∈(a,b)，使 f′(ξ)=0。', explanation:'注意三个条件缺一不可，可各举一个反例说明。', difficulty:3, ref:'《高等数学（上）》第3章 §3.1 p.76¶1', model:'DeepSeek-V3', status:'draft', rating:null },
+    { id:'e5', type:'calc', stem:'计算：∫ x·eˣ dx。', options:[], answer:'x·eˣ − eˣ + C', explanation:'分部积分：令 u = x，dv = eˣdx，则 ∫x·eˣdx = x·eˣ − ∫eˣdx = x·eˣ − eˣ + C。', difficulty:4, ref:'《高等数学（上）》第4章 §4.3 p.128¶2', model:'DeepSeek-V3', status:'draft', rating:null },
+  ],
+  models: [
+    { id:'m1', name:'DeepSeek-V3', provider:'DeepSeek', url:'https://api.deepseek.com/v1', caps:['文本','长文 64K'], ctx:'64K', defaults:['答疑','总结','出题'], tested:'连通正常 · 12ms', key:'已配置' },
+    { id:'m2', name:'GPT-5', provider:'OpenAI', url:'https://api.openai.com/v1', caps:['文本','视觉','长文 128K'], ctx:'128K', defaults:['阅卷'], tested:'连通正常 · 38ms', key:'已配置' },
+    { id:'m3', name:'Qwen2.5-72B-Instruct', provider:'Ollama（本地自建）', url:'http://127.0.0.1:11434/v1', caps:['文本','长文 32K'], ctx:'32K', defaults:[], tested:'连通正常 · 本地', key:'无需 Key' },
+    { id:'m4', name:'bge-m3-embed', provider:'Ollama（本地自建）', url:'http://127.0.0.1:11434/v1', caps:['嵌入 1024 维'], ctx:'8K', defaults:['向量化'], tested:'连通正常 · 本地', key:'无需 Key' },
+  ],
+  tasks: [
+    { id:'j1', type:'教材导入', name:'导入《高等数学（第七版·上册）》', status:'running', progress:68, cost:'—', time:'已运行 01:23', log:[['ok','✓'],['ok','PDF 文本抽取完成（248 页，38 万字）'],['ok','书签结构识别成功，生成 5 章 22 节'],['','向量化第 3 章… 1,204 / 1,768 段'],['warn','检测到 2 页扫描件，OCR 已自动加入队列']], },
+    { id:'j2', type:'章节向量化', name:'第1章 段落向量化（bge-m3-embed）', status:'running', progress:32, cost:'¥0.00（本地模型）', time:'已运行 00:41', log:[['','第 1 章共 1,768 段，int8 量化推理中…'],['ok','✓ 完成 562 / 1,768 段']], },
+    { id:'j3', type:'章节总结', name:'生成第2章知识总结', status:'completed', progress:100, cost:'¥0.42 · in 8,214 / out 1,502', time:'耗时 00:19', log:[['ok','✓ 总结已保存（版本 v1）'],['ok','✓ 提取知识点 14 个']], },
+    { id:'j4', type:'出题', name:'第1章出题 10 题（单选×5 / 简答×5）', status:'failed', progress:40, cost:'¥0.18', time:'耗时 00:07', log:[['err','✗ 模型超时（DeepSeek-V3，30s）'],['warn','可点击"重试"，将自动切换备用模型']], },
+  ],
+  usage: { tokens:'1.24 M', cost:'¥8.63', tasks:23, month:'2026-10' },
+  sessions: [
+    { role:'user', text:'什么是极限的 ε-δ 定义？如何判断函数在某点连续？' },
+    { role:'ai', text:'根据教材，函数极限的 ε-δ 定义如下：对于任意给定的正数 ε，总存在正数 δ，使得当 0 < |x − x₀| < δ 时，|f(x) − A| < ε 成立，则称 A 为 f(x) 在 x₀ 处的极限', cites:[{b:'《高等数学（上）》第1章 §1.3', p:'p.21¶1', q:'设函数 f(x) 在点 x₀ 的某一去心邻域内有定义…总存在正数 δ，使得当 x 满足不等式 0 < |x − x₀| < δ 时…'}], tail:'。' },
+    { role:'ai', text:'连续性的判定：若 lim(x→x₀) f(x) = f(x₀)，则 f(x) 在 x₀ 连续', cites:[{b:'《高等数学（上）》第1章 §1.4', p:'p.24¶1', q:'设函数 y = f(x) 在点 x₀ 的某一邻域内有定义，如果 lim(x→x₀) f(x) = f(x₀)，则称 f(x) 在点 x₀ 连续'}], tail:'。注意极限存在与否与 f(x) 在 x₀ 处是否有定义无关', cites2:[{b:'《高等数学（上）》第1章 §1.3', p:'p.23¶1', q:'极限存在与否与 f(x) 在 x₀ 处是否有定义无关'}], tail2:'。' },
+  ],
+};
+
+const TASK_TYPES = ['答疑','总结','出题','阅卷','教案','向量化'];
+const state = { view:'home', openChapters:new Set(['ch1']), curChapter:'ch1-3', wizard:null, quiz:null, result:null, chat:null };
+
+/* ================= 工具 ================= */
+const $ = s => document.querySelector(s);
+const view = () => $('#view');
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2400); }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ================= 导航 ================= */
+const NAV = [
+  ['home','🏠','首页'],
+  ['book','📖','教材浏览'],
+  ['wizard','🧙','出题向导'],
+  ['bank','🗂️','草稿箱 / 题库', DB.exercises.length],
+  ['quiz','⏱️','测验'],
+  ['report','📊','成绩单'],
+  ['qa','💬','答疑'],
+  ['models','🤖','模型管理'],
+  ['tasks','🖥️','任务中心', DB.tasks.filter(t=>t.status==='running').length],
+  ['settings','⚙️','设置'],
+];
+function renderRail(){
+  $('#rail').innerHTML = '<div class="rail-group">工作台</div>' + NAV.map(n=>
+    `<button class="rail-btn ${state.view===n[0]?'active':''}" data-view="${n[0]}"><span class="ico">${n[1]}</span><span>${n[2]}</span>${n[3]?`<span class="badge">${n[3]}</span>`:''}</button>`).join('');
+  $('#rail').querySelectorAll('.rail-btn').forEach(b=>b.onclick=()=>{ state.view=b.dataset.view; render(); });
+}
+
+/* ================= 首页 ================= */
+function renderHome(){
+  view().innerHTML = `
+  <div class="page-head"><h1>下午好 👋</h1><span class="sub">《${DB.course.name}》 · ${DB.course.term} · ${DB.course.desc}</span>
+    <div class="spacer"></div>
+    <button class="btn" onclick="toast('请选择 PDF / DOCX / MD / TXT / EPUB 文件')">📥 导入教材</button>
+    <button class="btn btn-primary" onclick="go('wizard')">＋ 新建出题任务</button>
+  </div>
+  <div class="stat-grid">
+    <div class="card stat"><div class="num">${DB.usage.tokens}</div><div class="lbl">本月 token 用量（${DB.usage.month}）</div></div>
+    <div class="card stat"><div class="num">${DB.usage.cost}</div><div class="lbl">本月费用估算</div></div>
+    <div class="card stat"><div class="num">${DB.usage.tasks}</div><div class="lbl">AI 任务次数</div></div>
+    <div class="card stat"><div class="num">${DB.textbooks.length}</div><div class="lbl">教材 / ${DB.chapters.length} 章</div></div>
+  </div>
+  <div class="quick">
+    <button class="btn" onclick="go('book')">📖 打开教材</button>
+    <button class="btn" onclick="go('qa')">💬 提问答疑</button>
+    <button class="btn" onclick="go('wizard')">🧙 生成习题</button>
+    <button class="btn" onclick="go('quiz')">⏱️ 开始测验</button>
+  </div>
+  <div class="page-head"><h1 style="font-size:16px">课程</h1></div>
+  <div class="dash-grid">
+    <div class="card course-card" onclick="go('book')">
+      <h3>📘 ${DB.course.name}</h3>
+      <div class="meta"><span>${DB.course.subject}</span><span>${DB.course.term}</span><span>${DB.textbooks.length} 本教材</span><span>${DB.chapters.length} 章</span></div>
+      <div class="divider"></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="tag accent">已向量化 2 章</span><span class="tag">草稿题 ${DB.exercises.length}</span></div>
+    </div>
+    <div class="card course-card" onclick="toast('原型：此处为新建课程入口')">
+      <h3 style="color:var(--faint)">＋ 新建课程</h3>
+      <div class="meta">创建课程、导入教材、设置教学目标</div>
+    </div>
+  </div>
+  <div class="page-head" style="margin-top:22px"><h1 style="font-size:16px">最近任务</h1><div class="spacer"></div><button class="btn btn-ghost btn-sm" onclick="go('tasks')">全部 →</button></div>
+  ${DB.tasks.slice(0,2).map(taskHTML).join('')}`;
+}
+
+/* ================= 教材浏览 ================= */
+function renderBook(){
+  const tree = DB.chapters.map(ch=>{
+    const open = state.openChapters.has(ch.id);
+    return `<div class="tree-item ${state.curChapter===ch.id?'active':''}" data-ch="${ch.id}">
+      <span class="arrow ${open?'open':''}" data-tgl="${ch.id}">▸</span><span>${ch.title}</span><span class="meta">${ch.pages}</span>
+    </div>
+    ${open?`<div class="tree-children">${ch.children.map(c=>`<div class="tree-item ${state.curChapter===c.id?'active':''}" data-ch="${c.id}"><span style="width:14px"></span><span>${c.title}</span><span class="meta">${c.pages}</span></div>`).join('')}</div>`:''}`;
+  }).join('');
+  const paras = DB.paras.map(p=>`
+    <div class="para" id="para-${p.no}">
+      <div class="pno">p.${p.page}<br>¶${p.no}</div>
+      <div class="ptext">${esc(p.text)}</div>
+      <button class="cite-btn" onclick="toast('引用已复制：第1章 §1.3 p.${p.page}¶${p.no}')">引用</button>
+    </div>`).join('');
+  view().innerHTML = `
+  <div class="page-head"><h1>📖 教材浏览</h1><span class="sub">《高等数学（第七版·上册）》 · PDF · 248 页 · 结构来源：PDF 书签</span>
+    <div class="spacer"></div>
+    <button class="btn btn-sm" onclick="toast('章节编辑器：拖拽调整 / 合并 / 重新划界')">✂️ 章节编辑</button>
+    <button class="btn btn-sm" onclick="toast('重新向量化第 1 章…')">⟳ 重新向量化</button>
+  </div>
+  <div class="toolbar">
+    <button class="btn btn-sm" onclick="go('wizard')">🧙 出题</button>
+    <button class="btn btn-sm" onclick="toast('已提交章节总结任务 → 任务中心')">📝 总结</button>
+    <button class="btn btn-sm" onclick="go('qa')">💬 答疑</button>
+    <button class="btn btn-sm" onclick="toast('已提交教案生成任务 → 任务中心')">📋 教案</button>
+    <button class="btn btn-sm" onclick="go('quiz')">⏱️ 测验</button>
+  </div>
+  <div class="book-layout" style="margin-top:14px">
+    <div class="card"><div class="card-pad" style="padding-bottom:6px"><b>教材目录</b></div><div class="tree card-pad" style="padding-top:6px">${tree}</div></div>
+    <div class="card">
+      <div class="content-head"><h2>§1.3 函数的极限（ε-δ 定义）</h2>
+        <div class="meta"><span>第1章 函数与极限</span><span>p.15-26</span><span>¶${DB.paras.length} 段 · 已向量化 ✓</span><span class="tag accent">RAG 检索范围</span></div>
+      </div>
+      ${paras}
+    </div>
+  </div>`;
+  view().querySelectorAll('[data-tgl]').forEach(a=>a.onclick=e=>{ e.stopPropagation(); const id=a.dataset.tgl; state.openChapters.has(id)?state.openChapters.delete(id):state.openChapters.add(id); renderBook(); });
+  view().querySelectorAll('[data-ch]').forEach(a=>a.onclick=()=>{ state.curChapter=a.dataset.ch; renderBook(); toast('原型：章节内容复用 §1.3 样例'); });
+}
+
+/* ================= 出题向导 ================= */
+function renderWizard(){
+  if(!state.wizard) state.wizard = { step:1, range:new Set(['ch1','ch1-3']), types:{single:5,judge:2,short:3}, difficulty:3, explain:true, answer:true, model:'m1' };
+  const w = state.wizard;
+  const steps = ['范围','题型与数量','模型','预览与审校'];
+  const stepBar = `<div class="wizard-steps">${steps.map((s,i)=>`<div class="wstep ${i+1<w.step?'done':i+1===w.step?'now':''}" data-n="${i+1}">${s}</div>`).join('')}</div>`;
+  let body = '';
+  if(w.step===1){
+    body = `<div class="wizard-body">
+      <div class="field" style="margin-bottom:14px"><label>选择出题范围（可多选）</label>
+      ${DB.chapters.map(ch=>`
+        <div class="chk ${w.range.has(ch.id)?'checked':''}" data-rng="${ch.id}"><input type="checkbox" ${w.range.has(ch.id)?'checked':''}><div><div class="t">${ch.title}</div><div class="d">${ch.pages} · ${ch.words}</div></div></div>
+        ${ch.children.map(c=>`<div class="chk ${w.range.has(c.id)?'checked':''}" data-rng="${c.id}" style="margin-left:22px"><input type="checkbox" ${w.range.has(c.id)?'checked':''}><div><div class="t">${c.title}</div><div class="d">${c.pages}</div></div></div>`).join('')}`).join('')}
+      </div>
+      <div style="display:flex;gap:10px"><button class="btn btn-primary" onclick="wizNext()">下一步：题型与数量 →</button><button class="btn btn-ghost" onclick="go('book')">取消</button></div></div>`;
+  } else if(w.step===2){
+    const types = [['single','单选题'],['multi','多选题'],['judge','判断题'],['fill','填空题'],['short','简答题'],['calc','计算题'],['essay','论述题']];
+    body = `<div class="wizard-body">
+      <div class="field" style="margin-bottom:14px"><label>题型与数量</label>
+      ${types.map(([k,label])=>`
+        <div class="chk ${w.types[k]?'checked':''}" data-type="${k}"><input type="checkbox" ${w.types[k]?'checked':''}><div class="t" style="flex:1">${label}</div>
+        ${w.types[k]?`<input type="number" min="1" max="50" value="${w.types[k]}" style="width:70px" data-qty="${k}" onclick="event.stopPropagation()">`:'<span class="d">未选</span>'}</div>`).join('')}
+      </div>
+      <div class="field-row">
+        <div class="field"><label>难度梯度（1-5，当前 ${w.difficulty}）</label><input type="range" min="1" max="5" value="${w.difficulty}" style="width:220px" oninput="state.wizard.difficulty=+this.value;renderWizard()"></div>
+        <div class="field"><label>选项</label>
+          <div class="chk ${w.explain?'checked':''}" data-tgl2="explain" style="max-width:220px"><input type="checkbox" ${w.explain?'checked':''}><div class="t">生成解析</div></div>
+          <div class="chk ${w.answer?'checked':''}" data-tgl2="answer" style="max-width:220px"><input type="checkbox" ${w.answer?'checked':''}><div class="t">生成参考答案</div></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px"><button class="btn btn-primary" onclick="wizNext()">下一步：选择模型 →</button><button class="btn btn-ghost" onclick="wizBack()">← 上一步</button></div></div>`;
+  } else if(w.step===3){
+    body = `<div class="wizard-body">
+      <div class="field" style="margin-bottom:14px"><label>生成模型（记住该任务上次使用的模型）</label>
+      ${DB.models.filter(m=>m.caps.includes('文本')).map(m=>`
+        <div class="chk ${w.model===m.id?'checked':''}" data-model="${m.id}"><input type="radio" name="wm" ${w.model===m.id?'checked':''}><div><div class="t">${m.name} <span class="tag" style="margin-left:6px">${m.provider}</span></div><div class="d">${m.caps.join(' · ')} · 上下文 ${m.ctx} · ${m.tested}</div></div></div>`).join('')}
+      </div>
+      <div class="card card-pad" style="background:var(--panel2);margin-bottom:16px"><b>💡 提示</b><br><span class="d" style="color:var(--muted)">出题为结构化任务，输出将受 JSON Schema 约束；答案唯一性与选项完整性会自动校验，不合规时自动重试（≤2 次）。生成物默认进入<b>草稿箱</b>，不会直接发布。</span></div>
+      <div style="display:flex;gap:10px"><button class="btn btn-primary" onclick="wizGen()">⚡ 开始生成</button><button class="btn btn-ghost" onclick="wizBack()">← 上一步</button></div></div>`;
+  } else {
+    const generated = [
+      { type:'single', stem:'极限 lim(x→0) (sin x / x) 的值是？', options:['A. 0','B. 1','C. ∞','D. 不存在'], answer:'B', exp:'重要极限之一，可通过夹逼定理证明。', ref:'第1章 §1.3 p.21¶1' },
+      { type:'single', stem:'函数 f(x) 在 x₀ 处可导是 f(x) 在 x₀ 处连续的？', options:['A. 充分不必要条件','B. 必要不充分条件','C. 充要条件','D. 既不充分也不必要'], answer:'A', exp:'可导必连续，连续不一定可导。', ref:'第2章 §2.1 p.42¶3' },
+      { type:'judge', stem:'初等函数在其定义区间内都是连续的。', options:[], answer:'√', exp:'教材原文结论。', ref:'第1章 §1.4 p.25¶1' },
+      { type:'short', stem:'用 ε-δ 语言证明：lim(x→2) (3x − 1) = 5。', options:[], answer:'提示：对任意 ε>0，取 δ = ε/3，当 0<|x−2|<δ 时 |3x−1−5| = 3|x−2| < ε。', exp:'评分要点：取 δ 过程 3 分 + 不等式推导 2 分。', ref:'第1章 §1.3 p.21¶1' },
+    ];
+    body = `<div class="wizard-body">
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap"><span class="tag accent">已生成 4 题</span><span class="tag">模型：DeepSeek-V3</span><span class="tag">耗时 6.2s · token in 8,214 / out 1,052</span></div>
+      ${generated.map((q,i)=>`
+        <div class="qgen">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span class="qtype ${q.type}">${{single:'单选',multi:'多选',judge:'判断',fill:'填空',short:'简答',calc:'计算',essay:'论述'}[q.type]}</span><span class="tag">难度 ${w.difficulty}</span><span class="tag">📎 ${q.ref}</span></div>
+          <div class="stem">${q.stem}</div>
+          ${q.options.length?`<div class="opts">${q.options.map(o=>`<div>${o}</div>`).join('')}</div>`:''}
+          ${w.answer?`<div class="ans">参考答案：${q.answer}</div>`:''}
+          ${w.explain?`<div class="exp">解析：${q.exp}</div>`:''}
+          <div class="ops"><button class="btn btn-sm" onclick="toast('已打开编辑器（原型）')">✏️ 编辑</button><button class="btn btn-sm" onclick="toast('重新生成该题…')">⟳ 重新生成</button><button class="btn btn-sm btn-danger" onclick="this.closest('.qgen').remove()">🗑 删除</button></div>
+        </div>`).join('')}
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="saveDraft()">📥 全部存入草稿箱</button>
+        <button class="btn" onclick="toast('已组卷（草稿）→ 可在题库导出 PDF')">📄 组卷</button>
+        <button class="btn" onclick="go('quiz')">⏱️ 直接测验</button>
+        <button class="btn btn-ghost" onclick="wizBack()">← 上一步</button>
+      </div></div>`;
+  }
+  view().innerHTML = `<div class="page-head"><h1>🧙 出题向导</h1><span class="sub">选范围 → 题型数量 → 模型 → 预览审校</span></div>${stepBar}${body}`;
+  view().querySelectorAll('[data-rng]').forEach(c=>c.onclick=()=>{ const id=c.dataset.rng; state.wizard.range.has(id)?state.wizard.range.delete(id):state.wizard.range.add(id); renderWizard(); });
+  view().querySelectorAll('[data-type]').forEach(c=>c.onclick=e=>{ if(e.target.tagName==='INPUT'&&e.target.type==='number')return; const k=c.dataset.type; state.wizard.types[k]?delete state.wizard.types[k]:state.wizard.types[k]=3; renderWizard(); });
+  view().querySelectorAll('[data-qty]').forEach(i=>i.onchange=()=>{ state.wizard.types[i.dataset.qty]=+i.value||1; });
+  view().querySelectorAll('[data-model]').forEach(c=>c.onclick=()=>{ state.wizard.model=c.dataset.model; renderWizard(); });
+  view().querySelectorAll('[data-tgl2]').forEach(c=>c.onclick=()=>{ const k=c.dataset.tgl2; state.wizard[k]=!state.wizard[k]; renderWizard(); });
+}
+function wizNext(){ if(state.wizard.step===1&&!state.wizard.range.size){toast('请至少选择一个章节');return;} state.wizard.step++; renderWizard(); }
+function wizBack(){ state.wizard.step--; renderWizard(); }
+function wizGen(){ state.wizard.step=4; toast('正在生成（流式输出）…'); setTimeout(renderWizard,400); }
+function saveDraft(){ toast('4 题已存入草稿箱（待审校）'); go('bank'); }
+
+/* ================= 草稿箱 / 题库 ================= */
+function renderBank(){
+  const rows = DB.exercises.map(q=>`<tr>
+    <td><span class="qtype ${q.type}">${{single:'单选',multi:'多选',judge:'判断',fill:'填空',short:'简答',calc:'计算',essay:'论述'}[q.type]}</span></td>
+    <td style="max-width:380px">${esc(q.stem)}</td>
+    <td class="stars">${'★'.repeat(q.difficulty)}${'☆'.repeat(5-q.difficulty)}</td>
+    <td style="font-size:12px;color:var(--muted)">📎 ${q.ref}</td>
+    <td><span class="tag">${q.model}</span><br>${q.status==='draft'?'<span class="tag warn">草稿</span>':'<span class="tag ok">已发布</span>'}</td>
+    <td>${q.rating?'👍':`<button class="btn btn-ghost btn-sm" onclick="toast('已标记 👍，用于回溯模型效果')">👍</button> <button class="btn btn-ghost btn-sm" onclick="toast('已标记 👎')">👎</button>`}</td>
+    <td><button class="btn btn-sm" onclick="toast('已打开编辑器（原型）')">编辑</button> <button class="btn btn-sm btn-ghost btn-danger" onclick="toast('已删除')">删除</button></td>
+  </tr>`).join('');
+  view().innerHTML = `
+  <div class="page-head"><h1>🗂️ 草稿箱 / 题库</h1><span class="sub">${DB.exercises.length} 题待审校</span>
+    <div class="spacer"></div>
+    <button class="btn btn-sm" onclick="toast('筛选：题型 / 章节 / 难度 / 状态（原型）')">🔽 筛选</button>
+    <button class="btn btn-sm" onclick="toast('已发布到题库')">✅ 全部发布</button>
+    <button class="btn btn-sm" onclick="toast('已导出题库 JSON')">⬇️ 导出</button>
+  </div>
+  <div class="card"><table><thead><tr><th>题型</th><th>题干</th><th>难度</th><th>来源引用</th><th>模型 / 状态</th><th>质量</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/* ================= 测验 ================= */
+const QUIZ = {
+  title:'第1-2章 阶段测验', duration:10*60,
+  questions:[
+    { id:'q1', type:'single', score:10, stem:'设 f(x) = x²，则 f′(1) = ?', options:['A. 0','B. 1','C. 2','D. 不存在'], answer:'C. 2', ref:'第2章 §2.1 p.41¶2' },
+    { id:'q2', type:'multi', score:10, stem:'下列函数中，在 x = 0 处连续但不可导的是？', options:['A. |x|','B. x²','C. x³','D. sin x'], answer:['A. |x|'], ref:'第2章 §2.1 p.44¶1' },
+    { id:'q3', type:'judge', score:10, stem:'判断：若函数在某点连续，则它在该点必可导。', options:['√ 正确','× 错误'], answer:'× 错误', ref:'第2章 §2.1 p.42¶3' },
+    { id:'q4', type:'short', score:35, stem:'用 ε-δ 语言证明：lim(x→2) (3x − 1) = 5。', options:[], ref:'第1章 §1.3 p.21¶1' },
+    { id:'q5', type:'essay', score:35, stem:'谈谈导数与微分的关系，并举例说明其几何意义。', options:[], ref:'第2章 §2.4 p.67¶1' },
+  ],
+};
+function renderQuiz(){
+  if(!state.quiz){ state.quiz = { left:QUIZ.duration, answers:{}, cur:'q1', submitted:false, timer:null };
+    state.quiz.timer = setInterval(()=>{ if(state.quiz.submitted){clearInterval(state.quiz.timer);return;} state.quiz.left--; if(state.quiz.left<=0){ if(state.view==='quiz'){submitQuiz();} else {state.quiz.left=0;clearInterval(state.quiz.timer);} } const el=$('#timer'); if(el){el.textContent=fmtTime(state.quiz.left); el.classList.toggle('urgent',state.quiz.left<60);} },1000);
+  }
+  const q = state.quiz;
+  const qhtml = QUIZ.questions.map((question,i)=>{
+    const isCur = q.cur===question.id;
+    return `<div class="question-card card" id="${question.id}" style="${isCur?'':'display:none'}">
+      <div class="qhead"><span class="qtype ${question.type}">${{single:'单选',multi:'多选',judge:'判断',short:'简答',essay:'论述'}[question.type]}</span><span class="tag">${question.score} 分</span><span class="tag">📎 ${question.ref}</span></div>
+      <div class="stem">${i+1}. ${question.stem}</div>
+      ${question.options.length?question.options.map(o=>`<div class="opt ${isSel(q.answers[question.id],o)}" data-q="${question.id}" data-o="${esc(o)}"><span class="key">${o[0]}</span><span>${o.slice(2)}</span></div>`).join(''):`<textarea class="answer" placeholder="在此作答…" data-q="${question.id}">${esc(q.answers[question.id]||'')}</textarea>`}
+    </div>`;
+  }).join('');
+  view().innerHTML = `
+  <div class="quiz-top">
+    <h1 style="font-size:17px">⏱️ ${QUIZ.title}</h1>
+    <div class="timer" id="timer">${fmtTime(q.left)}</div>
+    <span class="tag">共 ${QUIZ.questions.length} 题 · 满分 100</span>
+    <div class="spacer"></div>
+    <button class="btn btn-primary" onclick="submitQuiz()">提交答卷</button>
+  </div>
+  <div class="card card-pad" style="margin-bottom:14px"><div class="qnav">${QUIZ.questions.map((question,i)=>{const a=q.answers[question.id];return `<button data-nav="${question.id}" class="${q.cur===question.id?'cur':a?'done':''}">${i+1}</button>`}).join('')}</div></div>
+  ${qhtml}
+  <div style="display:flex;justify-content:space-between;margin-top:6px">
+    <button class="btn" id="prevQ">← 上一题</button><button class="btn" id="nextQ">下一题 →</button>
+  </div>`;
+  view().querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ const {q:qid,o:opt}=o.dataset; const q=QUIZ.questions.find(x=>x.id===qid);
+    if(q.type==='multi'){ const cur=q.answers[qid]||[]; const ix=cur.indexOf(opt); ix>=0?cur.splice(ix,1):cur.push(opt); q.answers[qid]=cur; }
+    else q.answers[qid]=opt;
+    renderQuiz(); });
+  view().querySelectorAll('textarea.answer').forEach(t=>t.oninput=()=>{ q.answers[t.dataset.q]=t.value; });
+  view().querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{ q.cur=b.dataset.nav; renderQuiz(); });
+  $('#prevQ').onclick=()=>navQ(-1); $('#nextQ').onclick=()=>navQ(1);
+}
+function isSel(ans,opt){ if(Array.isArray(ans))return ans.includes(opt); return ans===opt; }
+function navQ(d){ const ids=QUIZ.questions.map(x=>x.id); const i=ids.indexOf(state.quiz.cur); const n=ids[Math.min(ids.length-1,Math.max(0,i+d))]; state.quiz.cur=n; renderQuiz(); }
+function fmtTime(s){ return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+function submitQuiz(){
+  const q = state.quiz; if(!q||q.submitted) return;
+  q.submitted = true; clearInterval(q.timer);
+  const obj = QUIZ.questions.filter(x=>x.options.length);
+  const objScore = obj.reduce((s,x)=>{ const a=q.answers[x.id]||[]; const ok = Array.isArray(x.answer)?JSON.stringify([...a].sort())===JSON.stringify([...x.answer].sort()):a===x.answer; return ok?s+x.score:s; },0);
+  const subj = [ { id:'q4', score:30, max:35, fb:'<b>得分点：</b>① 对任意 ε>0 给出 δ 的取法（15 分，得 13 分）；② 完成 |3x−1−5| = 3|x−2| < ε 的推导（20 分，得 17 分）。<br><b>扣分原因：</b>未明确说明"取 δ = ε/3"这一步骤的合理性，仅写出结果。<br><b>改进建议：</b>证明题应先"给 ε → 找 δ"，再"验证 δ 满足定义"，两段式书写更清晰。' },
+                 { id:'q5', score:28, max:35, fb:'<b>得分点：</b>① 导数是变化率、微分是线性主部（15 分，得 12 分）；② 几何意义：切线斜率 vs 切线纵坐标增量（20 分，得 16 分）。<br><b>扣分原因：</b>未给出具体函数示例（如 y=x² 在 x=1 处的切线），说明不够完整。<br><b>改进建议：</b>概念关系题建议"定义 → 关系式 dy = f′(x)dx → 几何图示 → 举例"四步作答。' } ];
+  const subjScore = subj.reduce((s,x)=>s+x.score,0);
+  state.result = { total:objScore+subjScore, objScore, subjScore, left:q.left, answers:q.answers, subj,
+    radar:[ {name:'函数与极限',value:82},{name:'导数与微分',value:88},{name:'中值定理',value:64},{name:'不定积分',value:76},{name:'定积分',value:71} ] };
+  toast('答卷已提交，客观题已判分，主观题 AI 阅卷中…');
+  setTimeout(()=>{ go('report'); toast('AI 阅卷完成 ✓ 成绩单已生成') },900);
+}
+
+/* ================= 成绩单 ================= */
+function radarSVG(data,size){
+  size=size||320; const cx=size/2, cy=size/2+8, r=size/2-52, n=data.length;
+  const pt=(i,v)=>{ const a=-Math.PI/2+i*2*Math.PI/n, rr=r*v/100; return [cx+rr*Math.cos(a), cy+rr*Math.sin(a)]; };
+  let s='';
+  [25,50,75,100].forEach(v=>{ s+=`<polygon class="radar-ring" points="${data.map((_,i)=>pt(i,v).join(',')).join(' ')}"/>`; });
+  data.forEach((d,i)=>{ const [x,y]=pt(i,100); s+=`<line class="radar-axis" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}"/>`;
+    const [lx,ly]=pt(i,122); s+=`<text class="radar-label" x="${lx}" y="${ly}" text-anchor="middle">${d.name}</text><text class="radar-score" x="${lx}" y="${ly+14}" text-anchor="middle">${d.value}</text>`; });
+  s+=`<polygon class="radar-poly" points="${data.map((d,i)=>pt(i,d.value).join(',')).join(' ')}"/>`;
+  data.forEach((d,i)=>{ const [x,y]=pt(i,d.value); s+=`<circle class="radar-dot" cx="${x}" cy="${y}" r="3.5"/>`; });
+  return `<svg class="radar" viewBox="0 0 ${size} ${size}">${s}</svg>`;
+}
+function renderReport(){
+  const r = state.result;
+  if(!r){ view().innerHTML = `<div class="page-head"><h1>📊 成绩单</h1></div><div class="card empty">暂无测验记录<br><br><button class="btn btn-primary" onclick="go('quiz')">开始一次测验 →</button></div>`; return; }
+  const circumference = 2*Math.PI*64;
+  const fb = QUIZ.questions.map((q,i)=>{
+    const a = r.answers[q.id];
+    let verdict, detail, scoreCell = '';
+    if(q.options.length){
+      const ok = Array.isArray(q.answer)?JSON.stringify([...(a||[])].sort())===JSON.stringify([...q.answer].sort()):a===q.answer;
+      verdict = ok?'<span class="tag ok">✓ 正确</span>':'<span class="tag danger">✗ 错误</span>';
+      detail = ok?'':'参考答案：'+q.answer+' · 错因分析：建议重读 📎 引用段落';
+      scoreCell = (ok?q.score:0)+'/'+q.score;
+    } else {
+      const sj = r.subj.find(x=>x.id===q.id);
+      verdict = `<span class="tag accent">AI 阅卷 ${sj.score}/${sj.max}</span>`;
+      detail = sj.fb;
+      scoreCell = sj.score+'/'+sj.max;
+    }
+    return `<div class="fb-item"><div class="fb-head"><span class="qtype ${q.type}">${{single:'单选',multi:'多选',judge:'判断',short:'简答',essay:'论述'}[q.type]}</span><span style="font-weight:500">${i+1}. ${esc(q.stem)}</span>${verdict}<span class="fb-score">${scoreCell}</span></div><div class="fb-text">${detail}</div></div>`;
+  }).join('');
+  view().innerHTML = `
+  <div class="page-head"><h1>📊 成绩单 · ${QUIZ.title}</h1><span class="sub">用时 ${fmtTime(QUIZ.duration-r.left||QUIZ.duration)} · 主观题由 GPT-5 阅卷（temperature=0）</span>
+    <div class="spacer"></div><button class="btn btn-sm" onclick="toast('错题已归入错题本（P3）')">📒 加入错题本</button><button class="btn btn-sm" onclick="toast('已导出成绩单 PDF')">⬇️ 导出 PDF</button>
+  </div>
+  <div class="report-grid">
+    <div>
+      <div class="card card-pad" style="text-align:center">
+        <div style="color:var(--muted);font-size:12.5px">总得分</div>
+        <div class="score-ring" style="background:conic-gradient(var(--accent) ${r.total*3.6}deg, var(--panel2) 0deg)"><div class="big">${r.total}</div><div class="of">/ 100</div></div>
+        <div style="display:flex;justify-content:center;gap:16px;font-size:12.5px;color:var(--muted)"><span>客观 <b style="color:var(--text)">${r.objScore}/30</b></span><span>主观 <b style="color:var(--text)">${r.subjScore}/70</b></span></div>
+      </div>
+      <div class="card radar-wrap" style="margin-top:14px"><div style="text-align:center;font-size:12.5px;color:var(--muted);margin-bottom:6px">知识点掌握度（按章节）</div>${radarSVG(r.radar)}</div>
+    </div>
+    <div class="card">${fb}</div>
+  </div>`;
+}
+
+/* ================= 答疑 ================= */
+function renderQA(){
+  if(!state.chat) state.chat = { scope:'ch1-3', mode:'direct', msgs:DB.sessions.map(m=>({...m})), streaming:false };
+  const c = state.chat;
+  const msgHTML = c.msgs.map(m=>{
+    if(m.role==='user') return `<div class="msg user"><div class="avatar">学</div><div class="body"><div class="name">学生</div><div class="bubble">${esc(m.text)}</div></div></div>`;
+    return `<div class="msg ai"><div class="avatar">师</div><div class="body"><div class="name">AI 教师 · 模式：${{direct:'直接给答案',socratic:'苏格拉底式引导',review:'批改思路'}[c.mode]} · 模型 DeepSeek-V3</div>
+      <div class="bubble">${esc(m.text||'')}${m.cites?m.cites.map(x=>citeHTML(x)).join(''):''}${esc(m.tail||'')}${m.cites2?m.cites2.map(x=>citeHTML(x)).join(''):''}${esc(m.tail2||'')}${m.more?m.more:''}</div></div></div>`;
+  }).join('');
+  view().innerHTML = `
+  <div class="page-head"><h1>💬 答疑（AI 教师）</h1><span class="sub">强制 RAG：答案必带教材引用</span></div>
+  <div class="qa-layout">
+    <div class="card qa-side">
+      <div class="field"><label>检索范围</label>
+        <select id="qaScope">${[['ch1-3','本节：§1.3 函数的极限'],['ch1','本教材：第1章 函数与极限'],['all','全课程（2 本教材）']].map(([v,l])=>`<option value="${v}" ${c.scope===v?'selected':''}>${l}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>答疑模式</label>
+        <select id="qaMode">${[['direct','直接给答案'],['socratic','苏格拉底式引导（先提示）'],['review','批改学生思路']].map(([v,l])=>`<option value="${v}" ${c.mode===v?'selected':''}>${l}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>模型</label><select>${DB.models.filter(m=>m.caps.includes('文本')).map(m=>`<option>${m.name}</option>`).join('')}</select></div>
+      <div class="divider"></div>
+      <div style="font-size:12px;color:var(--muted)">💡 引用卡片悬停可预览原文段落；无出处的内容会声明"教材未覆盖"。</div>
+      <div class="divider"></div>
+      <button class="btn btn-sm" style="width:100%" onclick="toast('已收藏为答疑卡片 → 笔记')">🔖 收藏本对话为卡片</button>
+    </div>
+    <div class="card qa-main">
+      <div class="chat" id="chatBox">${msgHTML}${c.streaming?'<div class="msg ai"><div class="avatar">师</div><div class="body"><div class="name">AI 教师</div><div class="bubble typing"><span></span><span></span><span></span></div></div></div>':''}</div>
+      <div class="composer">
+        <textarea id="qaInput" placeholder="向 AI 教师提问，答案将基于所选范围的教材内容…" rows="2"></textarea>
+        <button class="btn btn-primary" id="qaSend">发送</button>
+      </div>
+    </div>
+  </div>`;
+  $('#qaScope').onchange=e=>{c.scope=e.target.value;};
+  $('#qaMode').onchange=e=>{c.mode=e.target.value; renderQA();};
+  const box=$('#chatBox'); box.scrollTop=box.scrollHeight;
+  $('#qaSend').onclick=sendQA;
+  $('#qaInput').onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendQA();} };
+}
+function citeHTML(x){ return `<span class="cite">📎 ${x.b} ${x.p}<span class="pop"><div class="src">原文片段 · ${x.b} · ${x.p}</div>${esc(x.q)}</span></span>`; }
+function sendQA(){
+  const inp=$('#qaInput'); const text=inp.value.trim(); if(!text||state.chat.streaming) return;
+  state.chat.msgs.push({role:'user',text}); inp.value='';
+  state.chat.streaming=true; renderQA();
+  setTimeout(()=>{
+    state.chat.streaming=false;
+    const replies=[
+      { text:'在 §1.3 中，极限的 ε-δ 定义是：对于任意给定的正数 ε，总存在正数 δ，使得当 0 < |x − x₀| < δ 时，|f(x) − A| < ε 成立', cites:[{b:'《高等数学（上）》第1章 §1.3',p:'p.21¶1',q:'设函数 f(x) 在点 x₀ 的某一去心邻域内有定义…总存在正数 δ，使得当 x 满足不等式 0 < |x − x₀| < δ 时，对应的函数值 f(x) 都满足不等式 |f(x) − A| < ε'}], tail:'。直观理解：x 越接近 x₀，f(x) 就越接近 A。' },
+      { text:'教材未覆盖该问题的完整证明，但根据 §1.4 的连续性定义可以推导：若 f 在 x₀ 连续，则 lim(x→x₀) f(x) = f(x₀)', cites:[{b:'《高等数学（上）》第1章 §1.4',p:'p.24¶1',q:'设函数 y = f(x) 在点 x₀ 的某一邻域内有定义，如果 lim(x→x₀) f(x) = f(x₀)，则称 f(x) 在点 x₀ 连续'}], tail:'。（声明：推导部分超出教材原文，已标注。）' },
+    ];
+    state.chat.msgs.push({...replies[Math.floor(Math.random()*replies.length)]});
+    renderQA();
+  },700);
+}
+
+/* ================= 模型管理 ================= */
+function renderModels(){
+  view().innerHTML = `
+  <div class="page-head"><h1>🤖 模型管理</h1><span class="sub">统一经 OpenAI 兼容网关接入 · Key 本地加密（AES-256-GCM + 系统钥匙串）</span>
+    <div class="spacer"></div><button class="btn btn-primary" onclick="toast('新建模型：填写名称 / 提供商 / Base URL / Key（原型）')">＋ 新建模型</button>
+  </div>
+  <div class="model-grid">
+  ${DB.models.map(m=>`
+    <div class="card model-card">
+      <h4>${m.name} <span class="tag">${m.provider}</span></h4>
+      <div class="url">${m.url}</div>
+      <div class="caps">${m.caps.map(c=>`<span class="tag accent">${c}</span>`).join('')}<span class="tag">上下文 ${m.ctx}</span></div>
+      <div style="font-size:12px;color:var(--muted)">默认任务：${m.defaults.length?m.defaults.join('、'):'—'} · Key：${m.key}</div>
+      <div class="foot">
+        <button class="btn btn-sm" onclick="testModel(this,'${m.name}')">🔌 测试连通</button>
+        <button class="btn btn-sm" onclick="toast('编辑 ${m.name}（原型）')">编辑</button>
+        <button class="btn btn-sm btn-ghost btn-danger" onclick="toast('已删除（原型）')">删除</button>
+        <span class="def">${m.tested.startsWith('连通')?'<span class="tag ok">'+m.tested+'</span>':'<span class="tag warn">未测试</span>'}</span>
+      </div>
+    </div>`).join('')}
+  </div>
+  <div class="page-head" style="margin-top:22px"><h1 style="font-size:16px">任务级默认模型</h1><span class="sub">每个任务记住上次使用的模型</span></div>
+  <div class="card card-pad">
+  ${TASK_TYPES.map((t,i)=>`<div class="set-row"><div class="lbl"><div class="t">${t}</div><div class="d">${['强制 RAG + 引用','多版本保存','JSON Schema 约束输出','评分细则 + 得分点','教学法模板','本地 int8 量化推荐'][i]}</div></div>
+    <select onchange="toast('${t} 默认模型已切换')">${DB.models.filter(m=>m.caps.includes(i===5?'嵌入':'文本')).map(m=>`<option>${m.name}</option>`).join('')}</select></div>`).join('')}
+  </div>`;
+}
+function testModel(btn,name){ btn.textContent='测试中…'; btn.disabled=true; setTimeout(()=>{ btn.textContent='🔌 测试连通'; btn.disabled=false; btn.closest('.model-card').querySelector('.foot .def').innerHTML=`<span class="tag ok">连通正常 · ${Math.floor(Math.random()*80)+8}ms</span>`; toast(name+' 连通正常'); },800); }
+
+/* ================= 任务中心 ================= */
+function taskHTML(t){
+  const st = {running:'<span class="tag accent">运行中</span>',completed:'<span class="tag ok">已完成</span>',failed:'<span class="tag danger">失败</span>',pending:'<span class="tag">等待中</span>'}[t.status];
+  return `<div class="card task-item">
+    <div class="task-top"><span style="font-size:16px">${{ '教材导入':'📥','章节向量化':'🧮','章节总结':'📝','出题':'🧙' }[t.type]||'⚙️'}</span><span class="name">${t.name}</span>${st}
+      <div class="ops">${t.status==='running'?`<button class="btn btn-sm btn-danger" onclick="toast('已取消任务（原型）')">取消</button>`:t.status==='failed'?`<button class="btn btn-sm" onclick="toast('正在重试，将切换备用模型…')">⟳ 重试</button>`:''}</div>
+    </div>
+    <div class="progress"><div style="width:${t.progress}%"></div></div>
+    <div class="task-meta"><span>类型：${t.type}</span><span>${t.time}</span><span>${t.cost}</span><span>${t.progress}%</span></div>
+    <div class="task-log">${t.log.map(([cls,line])=>`<div class="${cls}">${line||'&nbsp;'}</div>`).join('')}</div>
+  </div>`;
+}
+function renderTasks(){
+  view().innerHTML = `
+  <div class="page-head"><h1>🖥️ 任务中心</h1><span class="sub">${DB.tasks.filter(t=>t.status==='running').length} 个运行中 · 异步执行、可取消、支持断点续跑</span>
+    <div class="spacer"></div><button class="btn btn-sm" onclick="toast('已清空完成记录（原型）')">清空完成记录</button>
+  </div>
+  ${DB.tasks.map(taskHTML).join('')}`;
+}
+
+/* ================= 设置 ================= */
+function renderSettings(){
+  view().innerHTML = `
+  <div class="page-head"><h1>⚙️ 设置</h1></div>
+  <div class="set-grid">
+    <div class="card card-pad">
+      <h4 style="margin-bottom:10px">外观</h4>
+      <div class="set-row"><div class="lbl"><div class="t">深色模式</div><div class="d">跟随系统 / 手动切换</div></div><div class="switch ${document.documentElement.dataset.theme==='dark'?'on':''}" id="themeSw"></div></div>
+      <div class="set-row"><div class="lbl"><div class="t">界面语言</div></div><select><option>中文（简体）</option><option>English（P3）</option></select></div>
+      <div class="set-row"><div class="lbl"><div class="t">字号</div></div><select><option>标准</option><option>大</option><option>特大</option></select></div>
+    </div>
+    <div class="card card-pad">
+      <h4 style="margin-bottom:10px">模型与计费</h4>
+      <div class="set-row"><div class="lbl"><div class="t">单价表（费用估算用）</div><div class="d">可被各模型配置覆盖</div></div><button class="btn btn-sm" onclick="toast('编辑单价表（原型）')">编辑</button></div>
+      <div class="set-row"><div class="lbl"><div class="t">用量仪表盘</div></div><button class="btn btn-sm" onclick="go('home')">查看</button></div>
+      <div class="set-row"><div class="lbl"><div class="t">本地服务</div><div class="d">127.0.0.1:随机端口 · 令牌认证</div></div><span class="tag ok">运行中</span></div>
+    </div>
+    <div class="card card-pad">
+      <h4 style="margin-bottom:10px">数据与隐私</h4>
+      <div class="set-row"><div class="lbl"><div class="t">备份知识库</div><div class="d">导出为 .lumen 归档（SQLite + 原文 + 配置）</div></div><button class="btn btn-sm" onclick="toast('已导出 lumen-backup.lumen（可加密）')">⬇️ 立即备份</button></div>
+      <div class="set-row"><div class="lbl"><div class="t">从归档恢复</div></div><button class="btn btn-sm" onclick="toast('选择 .lumen 归档…（原型）')">恢复</button></div>
+      <div class="set-row"><div class="lbl"><div class="t">遥测与崩溃报告</div><div class="d">默认关闭，仅本地日志</div></div><div class="switch" onclick="this.classList.toggle('on')"></div></div>
+      <div class="set-row"><div class="lbl"><div class="t">数据目录</div><div class="d" style="font-family:var(--mono)">~/Library/Application Support/lumen/</div></div></div>
+    </div>
+    <div class="card card-pad">
+      <h4 style="margin-bottom:10px">快捷键</h4>
+      ${[['⌘K','全局搜索'],['⌘N','新建课程'],['⌘W','关闭标签'],['⌘E','导出'],['⌘,','打开设置']].map(([k,d])=>`<div class="set-row"><div class="lbl"><div class="t">${d}</div></div><kbd>${k}</kbd></div>`).join('')}
+    </div>
+  </div>`;
+  const sw=$('#themeSw'); if(sw) sw.onclick=()=>toggleTheme();
+}
+
+/* ================= 主题 & 启动 ================= */
+function toggleTheme(){
+  const html=document.documentElement;
+  const next = html.dataset.theme==='dark'?'light':'dark';
+  html.dataset.theme=next;
+  $('#themeBtn').textContent = next==='dark'?'☀️ 浅色':'🌙 深色';
+  if(state.view==='settings') renderSettings();
+}
+$('#themeBtn').onclick=toggleTheme;
+function go(v){ state.view=v; render(); }
+function render(){
+  renderRail();
+  ({home:renderHome,book:renderBook,wizard:renderWizard,bank:renderBank,quiz:renderQuiz,report:renderReport,qa:renderQA,models:renderModels,tasks:renderTasks,settings:renderSettings})[state.view]();
+  if(state.view==='home') window.scrollTo(0,0);
+  document.querySelector('.main').scrollTop=0;
+}
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+fastapi>=0.115
+uvicorn>=0.30
+sqlalchemy>=2.0
+pydantic>=2.7
+httpx>=0.27
+cryptography>=42
+
+# 文档解析（P0）
+PyMuPDF>=1.24
+python-docx>=1.1
+ebooklib>=0.3
+
+# 可选：向量检索 / 系统钥匙串
+sqlite-vec>=0.1.4
+keyring>=25
+
+# 测试
+pytest>=8
