@@ -22,6 +22,9 @@ def _free_port() -> int:
 def main():
     port = int(os.environ.get("LUMEN_PORT") or _free_port())
     token = os.environ.get("LUMEN_TOKEN") or secrets.token_urlsafe(32)
+    # 开发模式（LUMEN_DEV=1）：禁用令牌认证，方便前端直连
+    if os.environ.get("LUMEN_DEV"):
+        token = ""
     os.environ["LUMEN_TOKEN"] = token
 
     from app.core.config import SIDECAR_INFO_PATH

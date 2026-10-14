@@ -44,20 +44,42 @@ dev-frontend: ## 启动前端开发服务器（Vite，/api 代理到 sidecar）
 build-frontend: ## 构建前端（产出 frontend/dist，sidecar 生产模式托管）
 	cd $(FRONTEND_DIR) && npm run build
 
-dev: ## 开发模式：一键启动 mock LLM + sidecar + 前端
-	python3 $(BACKEND_DIR)/tests/mock_llm.py & echo $$! > /tmp/lumen-mock.pid
-	cd $(BACKEND_DIR) && $(VPY) run.py > /tmp/lumen-sidecar.log 2>&1 & echo $$! > /tmp/lumen-sidecar.pid
-	@sleep 2
-	@echo "sidecar 日志：tail -f /tmp/lumen-sidecar.log"
-	cd $(FRONTEND_DIR) && npm run dev
+dev: ## 开发模式：一键启动 mock LLM + sidecar + 前端（Ctrl+C 停止全部）
+	@$(MAKE) --no-print-directory stop
+	@echo "==> 启动模拟 LLM（端口 18100，仅测试用）..."
+	@python3 $(BACKEND_DIR)/tests/mock_llm.py >/tmp/lumen-mock.log 2>&1 & echo $$! > /tmp/lumen-mock.pid
+	@sleep 1
+	@if ! curl -sf -o /dev/null http://127.0.0.1:18100/v1/models; then \
+		echo "⚠ 模拟 LLM 启动失败（端口 18100 被占用？），跳过——可配置真实模型"; \
+		kill `cat /tmp/lumen-mock.pid` 2>/dev/null; rm -f /tmp/lumen-mock.pid; \
+	fi
+	@echo "==> 启动 sidecar..."
+	@LUMEN_DEV=1 $(BACKEND_DIR)/.venv/bin/python $(BACKEND_DIR)/run.py > /tmp/lumen-sidecar.log 2>&1 & echo $$! > /tmp/lumen-sidecar.pid
+	@ready=0; for i in $$(seq 1 40); do \
+		if grep -q '"type": "ready"' /tmp/lumen-sidecar.log 2>/dev/null; then ready=1; break; fi; \
+		sleep 0.5; \
+	done; \
+	if [ $$ready -ne 1 ]; then \
+		echo "✗ sidecar 启动失败："; tail -5 /tmp/lumen-sidecar.log; \
+		kill `cat /tmp/lumen-sidecar.pid` 2>/dev/null; rm -f /tmp/lumen-sidecar.pid; exit 1; \
+	fi
+	@echo "==> sidecar 就绪（日志：tail -f /tmp/lumen-sidecar.log）"
+	@echo "==> 启动前端开发服务器（Ctrl+C 停止全部）..."
+	@trap 'kill `cat /tmp/lumen-mock.pid` `cat /tmp/lumen-sidecar.pid` `cat /tmp/lumen-frontend.pid` 2>/dev/null; rm -f /tmp/lumen-mock.pid /tmp/lumen-sidecar.pid /tmp/lumen-frontend.pid' INT TERM; \
+	cd $(FRONTEND_DIR) && npm run dev & echo $$! > /tmp/lumen-frontend.pid; \
+	wait
 
 stop: ## 停止 make dev 启动的进程
-	@for f in /tmp/lumen-mock.pid /tmp/lumen-sidecar.pid; do \
+	@for f in /tmp/lumen-mock.pid /tmp/lumen-sidecar.pid /tmp/lumen-frontend.pid; do \
 		if [ -f $$f ]; then \
-			kill `cat $$f` 2>/dev/null || true; rm -f $$f; \
+			pid=`cat $$f`; \
+			for child in `pgrep -P $$pid`; do \
+				pkill -P $$child 2>/dev/null || true; \
+				kill $$child 2>/dev/null || true; \
+			done; \
+			kill $$pid 2>/dev/null || true; rm -f $$f; \
 		fi; \
 	done
-	@pkill -f "mock_llm.py" 2>/dev/null || true
 
 start-electron: build-frontend ## 启动桌面应用（自动先构建前端）
 	cd $(ELECTRON_DIR) && npm start
