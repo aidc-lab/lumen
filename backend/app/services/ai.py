@@ -9,7 +9,7 @@ import re
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, select
 
 from app.core.db import SessionLocal
 from app.models import (Answer, Attempt, Chapter, Exercise, LessonPlan,
@@ -133,19 +133,15 @@ async def generate_summary(job, chapter_id: str, model_id: str | None = None) ->
         job.tokens_in = usage.get("prompt_tokens", 0)
         job.tokens_out = usage.get("completion_tokens", 0)
         job.set_progress(80, "正在保存…")
-        version = 1 + (db.scalar(func_count_summaries(chapter_id)) or 0)
+        # 单版本：重新生成直接替换旧总结
+        db.execute(delete(Summary).where(Summary.chapter_id == chapter_id))
         row = Summary(id=uuid.uuid4().hex, chapter_id=chapter_id, content=content_out,
-                      model_id=model.id, version=version,
+                      model_id=model.id, version=1,
                       params={"model": model.name})
         db.add(row)
         db.commit()
         job.result_ref = row.id
         return row.id
-
-
-def func_count_summaries(chapter_id: str):
-    from sqlalchemy import func
-    return select(func.count()).where(Summary.chapter_id == chapter_id)
 
 
 # ---------------- 习题生成 ----------------
@@ -489,11 +485,11 @@ async def generate_lesson_plan(job, chapter_id: str,
         content_out, usage = await llm.chat(model, messages, temperature=0.5)
         job.tokens_in = usage.get("prompt_tokens", 0)
         job.tokens_out = usage.get("completion_tokens", 0)
-        version = 1 + (db.scalar(select(func.count())
-                                   .where(LessonPlan.chapter_id == chapter_id)) or 0)
+        # 单版本：重新生成直接替换旧教案
+        db.execute(delete(LessonPlan).where(LessonPlan.chapter_id == chapter_id))
         row = LessonPlan(id=uuid.uuid4().hex, chapter_id=chapter_id,
-                           content=content_out, model_id=model.id, version=version,
-                           params={"model": model.name})
+                         content=content_out, model_id=model.id, version=1,
+                         params={"model": model.name})
         db.add(row)
         db.commit()
         job.result_ref = row.id

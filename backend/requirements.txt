@@ -16,3 +16,4 @@ keyring>=25
 
 # 测试
 pytest>=8
+python-multipart>=0.0.9

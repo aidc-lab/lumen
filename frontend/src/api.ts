@@ -26,12 +26,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const { port, token } = await getSidecarInfo()
   const isDev = !!import.meta.env.DEV
   const base = isDev ? '' : `http://127.0.0.1:${port}`
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const isForm = typeof FormData !== 'undefined' && body instanceof FormData
+  const headers: Record<string, string> = {}
+  if (!isForm) headers['Content-Type'] = 'application/json'
   if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(`${base}${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : (isForm ? body : JSON.stringify(body)),
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
@@ -49,18 +51,19 @@ export const api = {
   del: <T>(path: string) => request<T>('DELETE', path),
 }
 
-/** SSE：任务进度 / 答疑流。令牌经 query 传递（EventSource 不支持自定义头）。 */
-export function openSSE(path: string, onEvent: (event: string, data: any) => void, onError?: (e: unknown) => void): EventSource {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  let es: EventSource
+/** SSE：任务进度 / 答疑流。令牌经 query 传递（EventSource 不支持自定义头）。
+ *  注意：EventSource 在 openSSE 内部异步创建，此处返回带 close() 的句柄，
+ *  调用方经 esp.close() 关闭（直接返回内部 es 会因异步赋值为 undefined）。 */
+export function openSSE(path: string, onEvent: (event: string, data: any) => void, onError?: (e: unknown) => void): { close: () => void } {
+  let inner: EventSource | undefined
   getSidecarInfo().then(({ port, token }) => {
     const isDev = !!import.meta.env.DEV
     const base = isDev ? '' : `http://127.0.0.1:${port}`
     const sep = path.includes('?') ? '&' : '?'
-    es = new EventSource(`${base}${path}${sep}token=${token}`)
+    inner = new EventSource(`${base}${path}${sep}token=${token}`)
     const events = ['delta', 'citation', 'done', 'error', 'task.progress', 'task.log', 'task.done', 'task.error']
     for (const ev of events) {
-      es.addEventListener(ev, (e: MessageEvent) => {
+      inner.addEventListener(ev, (e: MessageEvent) => {
         try {
           onEvent(ev, JSON.parse(e.data))
         } catch {
@@ -68,8 +71,7 @@ export function openSSE(path: string, onEvent: (event: string, data: any) => voi
         }
       })
     }
-    es.onerror = (e) => onError?.(e)
-  })
-  // @ts-expect-error assigned in promise
-  return es
+    inner.onerror = (e) => onError?.(e)
+  }).catch((e) => onError?.(e))
+  return { close: () => inner?.close() }
 }

@@ -92,11 +92,11 @@ ipcMain.handle('get-sidecar-info', () => sidecarInfo)
 
 ipcMain.handle('open-file-dialog', async () => {
   const r = await dialog.showOpenDialog({
-    properties: ['openFile'],
+    properties: ['openFile', 'multiSelections'],
     filters: [
       { name: '教材', extensions: ['pdf', 'docx', 'md', 'txt', 'epub'] },
       { name: '全部文件', extensions: ['*'] },
     ],
   })
-  return r.canceled ? null : r.filePaths[0]
+  return r.canceled ? [] : r.filePaths
 })

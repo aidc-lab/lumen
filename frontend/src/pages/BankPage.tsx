@@ -1,30 +1,42 @@
 import { useContext, useEffect, useState } from 'react'
 import { api } from '../api'
 import { ToastContext } from '../App'
-import type { View } from '../App'
+import type { NavTarget } from '../App'
 import { QTYPE_LABEL, type Exercise } from '../types'
 
 interface Props {
-  go: (v: View) => void
+  go: (v: NavTarget) => void
+  courseId: string
 }
 
-export default function BankPage({ go }: Props) {
+export default function BankPage({ go, courseId }: Props) {
   const toast = useContext(ToastContext)
   const [rows, setRows] = useState<Exercise[]>([])
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
   async function refresh() {
+    if (!courseId) { setRows([]); return }
     try {
-      const q = status ? `?status=${status}` : ''
-      setRows(await api.get<Exercise[]>(`/api/v1/exercises${q}`))
+      const q = [`course_id=${courseId}`]
+      if (status) q.push(`status=${status}`)
+      setRows(await api.get<Exercise[]>(`/api/v1/exercises?${q.join('&')}`))
       setError('')
     } catch (e) {
       setError(String(e))
     }
   }
 
-  useEffect(() => { refresh() }, [status])
+  useEffect(() => { refresh() }, [status, courseId])
+
+  if (!courseId) {
+    return (
+      <div className="card empty">
+        请在左侧选择课程<br /><br />
+        <button className="btn btn-primary" onClick={() => go('home')}>返回首页</button>
+      </div>
+    )
+  }
 
   return (
     <>

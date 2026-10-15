@@ -1,11 +1,12 @@
 import { useContext, useEffect, useState } from 'react'
 import { api, openSSE } from '../api'
 import { ToastContext } from '../App'
-import type { View } from '../App'
-import type { Chapter, Course, Exercise, ModelDef, Task } from '../types'
+import type { NavTarget } from '../App'
+import type { Chapter, Exercise, ModelDef, Task } from '../types'
 
 interface Props {
-  go: (v: View) => void
+  go: (v: NavTarget) => void
+  courseId: string
 }
 
 interface GenSpec {
@@ -16,10 +17,9 @@ interface GenSpec {
   model_id: string | null
 }
 
-export default function WizardPage({ go }: Props) {
+export default function WizardPage({ go, courseId }: Props) {
   const toast = useContext(ToastContext)
   const [step, setStep] = useState(1)
-  const [courses, setCourses] = useState<Course[]>([])
   const [textbooks, setTextbooks] = useState<{ id: string; title: string }[]>([])
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -35,17 +35,17 @@ export default function WizardPage({ go }: Props) {
   const [drafts, setDrafts] = useState<Exercise[]>([])
 
   useEffect(() => {
+    if (!courseId) return
     ;(async () => {
-      const [c, t, m] = await Promise.all([
-        api.get<Course[]>('/api/v1/courses'),
-        api.get<{ id: string; title: string }[]>('/api/v1/textbooks'),
+      const [t, m] = await Promise.all([
+        api.get<{ id: string; title: string }[]>(
+          `/api/v1/textbooks?course_id=${courseId}`),
         api.get<ModelDef[]>('/api/v1/models'),
       ])
-      setCourses(c)
       setTextbooks(t)
       setModels(m.filter((x) => x.capabilities.includes('text')))
     })().catch((e) => toast('加载失败：' + e.message))
-  }, [toast])
+  }, [courseId, toast])
 
   async function loadChapters(textbookId: string) {
     const rows = await api.get<Chapter[]>(`/api/v1/textbooks/${textbookId}/chapters`)
@@ -54,12 +54,12 @@ export default function WizardPage({ go }: Props) {
   }
 
   async function startGenerate() {
-    if (!courses[0]) return toast('请先创建课程')
+    if (!courseId) return toast('请先在左侧选择课程')
     if (selected.size === 0) return toast('请至少选择一个章节')
     setGenerating(true)
     try {
       const task = await api.post<Task>('/api/v1/exercises/generate', {
-        course_id: courses[0].id,
+        course_id: courseId,
         chapter_ids: [...selected],
         types: spec.types,
         difficulty: spec.difficulty,

@@ -1,11 +1,12 @@
 import { useContext, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { ToastContext } from '../App'
-import type { View } from '../App'
+import type { NavTarget } from '../App'
 import { QTYPE_LABEL, type Course, type Exercise } from '../types'
 
 interface Props {
-  go: (v: View) => void
+  go: (v: NavTarget) => void
+  courseId: string
 }
 
 interface QWithAnswer extends Exercise {
@@ -13,9 +14,8 @@ interface QWithAnswer extends Exercise {
   score: number
 }
 
-export default function QuizPage({ go }: Props) {
+export default function QuizPage({ go, courseId }: Props) {
   const toast = useContext(ToastContext)
-  const [courses, setCourses] = useState<Course[]>([])
   const [bank, setBank] = useState<Exercise[]>([])
   const [questions, setQuestions] = useState<QWithAnswer[]>([])
   const [paperId, setPaperId] = useState<string | null>(null)
@@ -29,25 +29,25 @@ export default function QuizPage({ go }: Props) {
   questionsRef.current = questions
 
   useEffect(() => {
+    if (!courseId) return
     ;(async () => {
-      const [c, b] = await Promise.all([
-        api.get<Course[]>('/api/v1/courses'),
-        api.get<Exercise[]>('/api/v1/exercises?status=published'),
-      ])
-      setCourses(c)
+      const b = await api.get<Exercise[]>(
+        `/api/v1/exercises?course_id=${courseId}&status=published`)
       setBank(b)
     })().catch((e) => toast('加载失败：' + e.message))
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [toast])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseId])
 
   async function start() {
+    if (!courseId) return toast('请先在左侧选择课程')
     if (bank.length === 0) return toast('题库为空 —— 先生成并发布题目')
     const picked = [...bank].slice(0, 10)
     const ids = picked.map((q) => q.id)
     try {
       const paper = await api.post<{ id: string; total_score: number; count: number }>(
         '/api/v1/papers',
-        { course_id: courses[0]?.id ?? '', title: '阶段测验', exercise_ids: ids, duration_min: 10, shuffle: true }
+        { course_id: courseId, title: '阶段测验', exercise_ids: ids, duration_min: 10, shuffle: true }
       )
       const attempt = await api.post<{ id: string; duration_min: number }>(`/api/v1/papers/${paper.id}/attempts`)
       setPaperId(paper.id)

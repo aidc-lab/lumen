@@ -1,7 +1,7 @@
 import { useContext, useEffect, useState } from 'react'
 import { api } from '../api'
 import { ToastContext } from '../App'
-import type { Course } from '../types'
+import type { NavTarget } from '../App'
 import { QTYPE_LABEL } from '../types'
 
 interface WrongItem {
@@ -14,23 +14,18 @@ interface WrongItem {
   wrong_count: number
 }
 
-export default function WrongPage() {
+interface Props {
+  go: (v: NavTarget) => void
+  courseId: string
+}
+
+export default function WrongPage({ go, courseId }: Props) {
   const toast = useContext(ToastContext)
-  const [courses, setCourses] = useState<Course[]>([])
-  const [courseId, setCourseId] = useState('')
   const [items, setItems] = useState<WrongItem[]>([])
   const [error, setError] = useState('')
 
   useEffect(() => {
-    ;(async () => {
-      const c = await api.get<Course[]>('/api/v1/courses')
-      setCourses(c)
-      if (c[0]) setCourseId(c[0].id)
-    })().catch((e) => toast('加载失败：' + e.message))
-  }, [toast])
-
-  useEffect(() => {
-    if (!courseId) return
+    if (!courseId) { setItems([]); return }
     ;(async () => {
       try {
         const r = await api.get<{ items: WrongItem[] }>(
@@ -43,15 +38,22 @@ export default function WrongPage() {
     })()
   }, [courseId])
 
+  if (!courseId) {
+    return (
+      <div className="card empty">
+        请在左侧「我的课程」中选择课程<br /><br />
+        <button className="btn btn-primary" onClick={() => go('home')}>返回概览</button>
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="page-head">
         <h1>📕 错题本</h1>
         <span className="sub">{items.length} 题 · 按错误次数排序</span>
         <div className="spacer" />
-        <select value={courseId} onChange={(e) => setCourseId(e.target.value)}>
-          {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <button className="btn btn-sm" onClick={() => go('quiz')}>⏱️ 去测验</button>
       </div>
       {error && <div className="error-box">{error}</div>}
       {items.map((it, i) => (

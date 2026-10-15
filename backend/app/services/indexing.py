@@ -57,9 +57,13 @@ async def rebuild_chapter_index(chapter_id: str, job=None) -> int:
         ).all()
 
         # FTS 全文索引（CJK 逐字分词后入库，支持中文子串检索）
-        db.execute(
-            text("INSERT INTO chapter_fts (chunk_id, chapter_id, content) VALUES (:i, :c, :t)"),
-            [{"i": r[0], "c": chapter_id, "t": _cjk_spaced(r[1])} for r in chunk_rows])
+        # 注意：空章节（封面/扉页等无正文标题页）无 chunk，需跳过空 executemany
+        if chunk_rows:
+            db.execute(
+                text("INSERT INTO chapter_fts (chunk_id, chapter_id, content) VALUES (:i, :c, :t)"),
+                [{"i": r[0], "c": chapter_id, "t": _cjk_spaced(r[1])} for r in chunk_rows])
+        else:
+            logger.info("章节 %s 无正文，跳过索引", chapter_id)
 
         # 向量化（需要用户配置的嵌入模型）
         dim, model_id = _embedding_config(db)
@@ -268,14 +272,15 @@ def clear_textbook_index(textbook_id: str):
             {"t": textbook_id}).all()]
         if not ch_ids:
             return
-        for cid in ch_ids:
-            db.execute(text("DELETE FROM chapter_fts WHERE chapter_id = :c"), {"c": cid})
+        # 参数化 IN（直接拼值会被当单个字面量，匹配不到任何行）
+        ph = ",".join(f":i{n}" for n in range(len(ch_ids)))
+        bind = {f"i{n}": c for n, c in enumerate(ch_ids)}
+        db.execute(text(f"DELETE FROM chapter_fts WHERE chapter_id IN ({ph})"), bind)
         db.execute(delete(ChapterChunk).where(ChapterChunk.chapter_id.in_(ch_ids)))
         if VEC_AVAILABLE:
             db.execute(text(
-                "DELETE FROM vec_chunks WHERE chunk_id IN "
-                "(SELECT id FROM chapter_chunks WHERE chapter_id IN (:ids))"),
-                {"ids": ",".join(ch_ids)})
+                f"DELETE FROM vec_chunks WHERE chunk_id IN "
+                f"(SELECT id FROM chapter_chunks WHERE chapter_id IN ({ph}))"), bind)
         db.commit()
 
 

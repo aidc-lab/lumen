@@ -6,9 +6,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, text, update
 
 from app.core.config import FILES_DIR
 from app.core.db import SessionLocal, VEC_AVAILABLE
@@ -106,21 +106,50 @@ def import_textbook(body: TextbookImport):
     # 复制到应用数据目录
     dest = FILES_DIR / f"{_uid()}.{file_type}"
     shutil.copy2(src, dest)
+    return _start_import_task(body.course_id, dest, file_type,
+                              body.title, body.passphrase)
+
+
+@router.post("/textbooks/upload", response_model=TaskOut, status_code=202)
+async def upload_textbook(
+    course_id: str = Form(...),
+    title: str | None = Form(None),
+    passphrase: str | None = Form(None),
+    file: UploadFile = File(...),
+):
+    """浏览器模式教材导入：multipart 上传文件（桌面模式请用 /import，本地路径直传）。"""
+    file_type = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if file_type not in ("pdf", "docx", "md", "markdown", "txt", "epub"):
+        raise _err("E_UNSUPPORTED", f"不支持的类型 .{file_type}")
     with SessionLocal() as db:
-        course = db.get(Course, body.course_id)
+        if db.get(Course, course_id) is None:
+            raise _err("E_NOT_FOUND", f"课程不存在: {course_id}", 404)
+    # 教材名以原始文件名命名
+    original = (file.filename or "").strip()
+    dest = FILES_DIR / f"{_uid()}.{file_type}"
+    dest.write_bytes(await file.read())
+    return _start_import_task(course_id, dest, file_type,
+                              title or Path(original).stem, passphrase)
+
+
+def _start_import_task(course_id: str, dest: Path, file_type: str,
+                       title: str | None, passphrase: str | None) -> AITask:
+    """公共逻辑：登记教材记录并提交解析任务（import / upload 共用）。"""
+    with SessionLocal() as db:
+        course = db.get(Course, course_id)
         if course is None:
-            raise _err("E_NOT_FOUND", f"课程不存在: {body.course_id}", 404)
-        title = body.title or src.stem
-        row = Textbook(id=_uid(), course_id=body.course_id, title=title,
+            raise _err("E_NOT_FOUND", f"课程不存在: {course_id}", 404)
+        title = title or dest.stem
+        row = Textbook(id=_uid(), course_id=course_id, title=title,
                        file_path=str(dest), file_type=file_type,
                        file_hash=parsing.file_hash(str(dest)),
                        status="pending",
-                       file_passphrase_enc=encrypt(body.passphrase) if body.passphrase else None)
+                       file_passphrase_enc=encrypt(passphrase) if passphrase else None)
         db.add(row)
         db.commit()
         textbook_id = row.id
-        params = {"textbook_id": textbook_id, "title": title, "passphrase": body.passphrase}
-        job = jobs.create("教材导入", params, lambda j: _run_import(j, textbook_id, body.passphrase))
+        params = {"textbook_id": textbook_id, "title": title, "passphrase": passphrase}
+        job = jobs.create("教材导入", params, lambda j: _run_import(j, textbook_id, passphrase))
         return _job_to_task(job)
 
 
@@ -185,6 +214,38 @@ def get_textbook(textbook_id: str):
         if row is None:
             raise _err("E_NOT_FOUND", f"教材不存在: {textbook_id}", 404)
         return row
+
+
+@router.delete("/textbooks/{textbook_id}", status_code=204)
+def delete_textbook(textbook_id: str):
+    """删除教材及其章节、摘要、教案与索引（题目转孤立后保留）。"""
+    with SessionLocal() as db:
+        row = db.get(Textbook, textbook_id)
+        if row is None:
+            raise _err("E_NOT_FOUND", f"教材不存在: {textbook_id}", 404)
+        chapter_ids = [c.id for c in db.scalars(
+            select(Chapter).where(Chapter.textbook_id == textbook_id))]
+        # 同一会话内清理索引（跨会话调用会因写锁失败而留下孤儿 FTS 行）
+        if chapter_ids:
+            ph = ",".join(f":i{n}" for n in range(len(chapter_ids)))
+            bind = {f"i{n}": cid for n, cid in enumerate(chapter_ids)}
+            db.execute(text(f"DELETE FROM chapter_fts WHERE chapter_id IN ({ph})"), bind)
+            if VEC_AVAILABLE:
+                db.execute(text(
+                    f"DELETE FROM vec_chunks WHERE chunk_id IN "
+                    f"(SELECT id FROM chapter_chunks WHERE chapter_id IN ({ph}))"), bind)
+            db.execute(delete(ChapterChunk).where(
+                ChapterChunk.chapter_id.in_(chapter_ids)))
+        for cid in chapter_ids:
+            db.execute(delete(Summary).where(Summary.chapter_id == cid))
+            db.execute(delete(LessonPlan).where(LessonPlan.chapter_id == cid))
+            # 题目保留但解除章节归属（题库独立于教材）
+            db.execute(update(Exercise).where(Exercise.chapter_id == cid)
+                       .values(chapter_id=None))
+        db.execute(delete(Chapter).where(Chapter.textbook_id == textbook_id))
+        db.delete(row)
+        db.commit()
+        return None
 
 
 @router.get("/textbooks/{textbook_id}/chapters", response_model=list[ChapterOut])

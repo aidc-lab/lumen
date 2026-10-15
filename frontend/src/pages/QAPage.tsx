@@ -1,7 +1,7 @@
 import { useContext, useEffect, useRef, useState } from 'react'
 import { api, openSSE } from '../api'
 import { ToastContext } from '../App'
-import type { Citation, Course, Session as SessionT, Message } from '../types'
+import type { Chapter, Citation, Session as SessionT, Message, Textbook } from '../types'
 
 interface DraftMsg {
   role: 'user' | 'assistant'
@@ -10,30 +10,48 @@ interface DraftMsg {
   pendingCite: boolean
 }
 
-export default function QAPage() {
+interface Props {
+  courseId: string
+}
+
+export default function QAPage({ courseId }: Props) {
   const toast = useContext(ToastContext)
   const [sessions, setSessions] = useState<SessionT[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [msgs, setMsgs] = useState<DraftMsg[]>([])
   const [input, setInput] = useState('')
   const [scope, setScope] = useState('all')
+  const [chapters, setChapters] = useState<Chapter[]>([])
   const [mode, setMode] = useState('direct')
   const [streaming, setStreaming] = useState(false)
   const chatRef = useRef<HTMLDivElement>(null)
 
+  // 课程变化：重置会话并加载该课程的章节（检索范围）
   useEffect(() => {
+    if (!courseId) { setSessions([]); setMsgs([]); setSessionId(null); return }
+    setScope('all')
     ;(async () => {
-      const list = await api.get<SessionT[]>('/api/v1/sessions')
+      const [list, texts] = await Promise.all([
+        api.get<SessionT[]>(`/api/v1/sessions?course_id=${courseId}`),
+        api.get<Textbook[]>(`/api/v1/textbooks?course_id=${courseId}`),
+      ])
       setSessions(list)
       if (list[0]) await openSession(list[0].id)
       else {
         const s = await api.post<SessionT>('/api/v1/sessions', {
-          title: '新会话', scope: {}, mode,
+          title: '新会话', course_id: courseId, scope: {}, mode,
         })
         setSessionId(s.id)
+        setMsgs([])
       }
+      // 章节树（用于检索范围选择）
+      const chapterLists = await Promise.all(
+        texts.map((t) => api.get<Chapter[]>(`/api/v1/textbooks/${t.id}/chapters`))
+      )
+      setChapters(chapterLists.flat())
     })().catch((e) => toast('加载失败：' + e.message))
-  }, [toast])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseId])
 
   useEffect(() => {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight })
@@ -48,6 +66,16 @@ export default function QAPage() {
       citations: m.citations?.list ?? [],
       pendingCite: false,
     })))
+  }
+
+  async function newSession() {
+    if (!courseId) return
+    const s = await api.post<SessionT>('/api/v1/sessions', {
+      title: `会话 ${sessions.length + 1}`, course_id: courseId, scope: {}, mode,
+    })
+    setSessionId(s.id)
+    setMsgs([])
+    setSessions(await api.get<SessionT[]>(`/api/v1/sessions?course_id=${courseId}`))
   }
 
   async function send() {
@@ -93,11 +121,17 @@ export default function QAPage() {
     )
   }
 
+  if (!courseId) {
+    return <div className="card empty">请在左侧「我的课程」中选择课程</div>
+  }
+
   return (
     <>
       <div className="page-head">
         <h1>💬 答疑（AI 教师）</h1>
         <span className="sub">强制 RAG：答案必带教材引用</span>
+        <div className="spacer" />
+        <button className="btn btn-sm" onClick={newSession}>＋ 新会话</button>
       </div>
       <div className="qa-layout">
         <div className="card qa-side">
@@ -105,6 +139,9 @@ export default function QAPage() {
             <label>检索范围</label>
             <select value={scope} onChange={(e) => setScope(e.target.value)}>
               <option value="all">全课程（全部教材）</option>
+              {chapters.map((c) => (
+                <option key={c.id} value={c.id}>{c.title}</option>
+              ))}
             </select>
           </div>
           <div className="field">

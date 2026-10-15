@@ -45,6 +45,35 @@ def api():
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null")
 
+    def upload(path, course_id, file_path, title=None):
+        """multipart/form-data 上传（浏览器模式导入教材）。"""
+        boundary = "----lumen" + "0" * 24
+        def field(name, value):
+            return (f'--{boundary}\r\nContent-Disposition: form-data; '
+                    f'name="{name}"\r\n\r\n{value}\r\n').encode()
+        body_parts = [field("course_id", course_id)]
+        if title:
+            body_parts.append(field("title", title))
+        content = Path(file_path).read_bytes()
+        fname = Path(file_path).name
+        body_parts.append(
+            (f'--{boundary}\r\nContent-Disposition: form-data; '
+             f'name="file"; filename="{fname}"\r\n'
+             f'Content-Type: application/octet-stream\r\n\r\n').encode()
+            + content + b"\r\n")
+        body_parts.append(f'--{boundary}--\r\n'.encode())
+        req = urllib.request.Request(
+            base + path + "?token=" + token,
+            data=b"".join(body_parts), method="POST")
+        req.add_header("Content-Type",
+                       f"multipart/form-data; boundary={boundary}")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.status, json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"null")
+
+    call.upload = upload
     return call
 
 
@@ -255,6 +284,30 @@ def test_full_workflow(api):
     check("错题本聚合判错题目", st == 200 and len(wrong["items"]) >= 1,
           f"items={len(wrong.get('items', []))}")
     check("错题带来源与解析", wrong["items"] and wrong["items"][0]["explanation"] is not None)
+
+    # 15. 教材上传（浏览器模式 multipart）
+    st, task = api.upload("/textbooks/upload", course_id,
+                          Path(__file__).parent / "test-book.md")
+    check("提交教材上传（multipart）", st == 202 and task.get("id"))
+    task2 = _wait_task(api, task["id"])
+    check("教材上传完成", task2["status"] == "completed", task2.get("error", ""))
+    tb2 = task2["result_ref"]
+    st, tb_info = api("GET", f"/textbooks/{tb2}")
+    check("上传教材名为原文件名", st == 200 and tb_info["title"] == "test-book",
+          tb_info.get("title", ""))
+
+    # 课程下应有多本教材（多教材展示）
+    st, tbs = api("GET", f"/textbooks?course_id={course_id}")
+    check("课程含多本教材", st == 200 and len(tbs) >= 2, f"got {len(tbs)}")
+
+    # 16. 删除教材（含章节/索引清理）
+    st, _ = api("DELETE", f"/textbooks/{tb2}")
+    check("删除教材", st == 204)
+    st, tbs_after = api("GET", f"/textbooks?course_id={course_id}")
+    check("删除后教材数减少", len(tbs_after) == len(tbs) - 1,
+          f"{len(tbs)} -> {len(tbs_after)}")
+    st, ch2 = api("GET", f"/textbooks/{tb2}/chapters")
+    check("章节随教材删除", st == 200 and len(ch2) == 0)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import { useContext, useEffect, useState } from 'react'
 import { api } from '../api'
 import { ToastContext } from '../App'
-import type { View } from '../App'
+import type { NavTarget } from '../App'
 import { QTYPE_LABEL } from '../types'
 
 interface ReportItem {
@@ -24,7 +24,7 @@ interface ReportItem {
   } | null
 }
 
-export default function ReportPage({ go }: { go: (v: View) => void }) {
+export default function ReportPage({ go }: { go: (v: NavTarget) => void }) {
   const toast = useContext(ToastContext)
   const [attempts, setAttempts] = useState<{ id: string; score: number | null; status: string; paper_id: string }[]>([])
   const [report, setReport] = useState<{ score: number | null; items: ReportItem[] } | null>(null)
