@@ -108,10 +108,10 @@ tr:hover td{background:var(--panel2);}
 
 /* ============ 教材浏览 ============ */
 .book-layout{display:grid;grid-template-columns:280px 1fr;gap:16px;align-items:start;}
-.content-head{padding:14px 20px 10px;border-bottom:1px solid var(--border);}
+.content-head{padding:14px 20px 10px;}
 .content-head h2{font-size:17px;}
 .content-head .meta{color:var(--muted);font-size:12.5px;margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;}
-.para{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:10px;position:relative;}
+.para{padding:10px 14px;display:flex;gap:10px;position:relative;}
 .para:hover{background:var(--panel2);}
 .para .pno{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0;padding-top:3px;width:52px;text-align:right;}
 .para .ptext{flex:1;}
