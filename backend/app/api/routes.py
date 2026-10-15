@@ -172,22 +172,34 @@ async def _run_import(job, textbook_id: str, passphrase: str | None = None) -> s
         sections = parsing.build_chapter_tree(result)
         tb.structure_source = sections[0]["structure"] if sections else "auto"
         job.set_progress(25, f"结构识别：{len(sections)} 章（{tb.structure_source}）")
-        # 生成章节树
-        root_chapters = []
+        # 生成章节树：按层级栈链接父子；path 用补零序号前缀保证
+        # ORDER BY path 即文档序（否则 "1.1" 字符串会排在 "1" 之前）
+        chapters: list[Chapter] = []
+        last_by_level: dict[int, Chapter] = {}
+        counters: dict[int, int] = {}
         for sec in sections:
-            ch = Chapter(id=_uid(), textbook_id=textbook_id, parent_id=None,
-                         title=sec["title"], level=sec["level"],
-                         path=sec["title"],
+            lvl = sec["level"]
+            counters[lvl] = counters.get(lvl, 0) + 1
+            for deeper in [l for l in counters if l > lvl]:
+                del counters[deeper]
+            prefix = ".".join(f"{counters.get(l, 0):03d}" for l in range(1, lvl + 1))
+            parent = last_by_level.get(lvl - 1)
+            ch = Chapter(id=_uid(), textbook_id=textbook_id,
+                         parent_id=parent.id if parent else None,
+                         title=sec["title"], level=lvl,
+                         path=f"{prefix} {sec['title']}",
                          page_start=sec.get("page_start"), page_end=sec.get("page_end"),
                          word_count=len(sec["text"]), content=sec["text"],
                          structure=sec["structure"])
             db.add(ch)
-            root_chapters.append(ch)
+            db.flush()  # 立即分配 id，供子章节引用
+            chapters.append(ch)
+            last_by_level[lvl] = ch
         db.commit()
         job.set_progress(40, "章节树已生成，待确认")
         # 分段 + 索引（FTS；向量化取决于用户是否配置嵌入模型）
-        total = len(root_chapters)
-        for i, ch in enumerate(root_chapters):
+        total = len(chapters)
+        for i, ch in enumerate(chapters):
             job.check_cancelled()
             n = await indexing.rebuild_chapter_index(ch.id, job)
             job.set_progress(40 + (i / total) * 55,

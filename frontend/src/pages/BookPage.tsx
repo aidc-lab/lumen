@@ -53,7 +53,8 @@ export default function BookPage({ go, courseId }: Props) {
       setExpanded(Object.fromEntries(t.map((b) => [b.id, true])))
       const rootOpen: Record<string, boolean> = {}
       for (const rows of Object.values(map)) {
-        for (const c of rows.filter((r) => r.level === 1)) rootOpen[c.id] = true
+        // 默认展开所有根章节（不限 level：EPUB 的章可能是 L2）
+        for (const c of rows.filter((r) => !r.parent_id)) rootOpen[c.id] = true
       }
       setOpen(rootOpen)
       const first = t[0] ? map[t[0].id]?.[0] : null

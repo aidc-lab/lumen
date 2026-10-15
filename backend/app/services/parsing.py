@@ -142,8 +142,10 @@ def _extract_epub(path: str) -> ExtractResult:
     res = ExtractResult()
     book = epub.read_epub(path)
     buf: list[str] = []
-    for item in book.get_items():
-        if item.get_type() != 9:  # ITEM_DOCUMENT
+    # 必须按 spine（阅读顺序）遍历：get_items() 是内部条目序，章节会乱序
+    for idref, _linear in book.spine:
+        item = book.get_item_with_id(idref)
+        if item is None or item.get_type() != 9:  # ITEM_DOCUMENT
             continue
         html = item.get_content().decode("utf-8", errors="replace")
         p = _TextExtractor()
