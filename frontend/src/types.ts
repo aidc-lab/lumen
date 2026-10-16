@@ -133,7 +133,7 @@ export interface Message {
   session_id: string
   role: string
   content: string
-  citations: { list?: Citation[] } | null
+  citations: { list?: Citation[]; refs?: string[] } | null
   model_id: string | null
   tokens_in: number
   tokens_out: number
@@ -153,6 +153,48 @@ export interface ModelTestResult {
   ok: boolean
   detail: string
   latency_ms: number
+}
+
+/** 试卷 */
+export interface Paper {
+  id: string
+  course_id: string
+  title: string
+  duration_min: number
+  total_score: number
+  created_at: string
+  question_count: number
+}
+
+export interface PaperQuestionView {
+  order: number
+  score: number
+  exercise_id: string
+  type: string
+  stem: string
+  options: unknown[] | null
+  difficulty: number
+}
+
+export interface PaperDetail {
+  id: string
+  title: string
+  duration_min: number
+  total_score: number
+  questions: PaperQuestionView[]
+}
+
+/** 作答记录（成绩单数据源） */
+export interface Attempt {
+  id: string
+  paper_id: string
+  paper_title: string | null
+  score: number | null
+  total_score: number
+  status: string
+  started_at: string
+  finished_at: string | null
+  question_count: number
 }
 
 export const QTYPE_LABEL: Record<string, string> = {

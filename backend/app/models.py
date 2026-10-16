@@ -1,9 +1,11 @@
 """SQLAlchemy 数据模型（对应设计文档 §7）。"""
 import enum
+import json
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import PrimaryKeyConstraint
 
 from app.core.db import Base
 
@@ -145,6 +147,15 @@ class Answer(Base):
     regraded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class WrongEntry(Base):
+    """错题本条目：用户/系统将某题加入课程错题本。"""
+    __tablename__ = "wrong_entries"
+    course_id: Mapped[str] = mapped_column(String(36), ForeignKey("courses.id", ondelete="CASCADE"), index=True)
+    question_id: Mapped[str] = mapped_column(String(36), ForeignKey("exercises.id", ondelete="CASCADE"), index=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (PrimaryKeyConstraint("course_id", "question_id"),)
+
+
 class Summary(Base):
     __tablename__ = "summaries"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -240,3 +251,15 @@ class Setting(Base):
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
+
+
+def parse_setting(value: str) -> str:
+    """读取 Setting.value：兼容早期用 json.dumps 写入的字符串（两侧带双引号）。"""
+    if value[:1] == '"':
+        try:
+            v = json.loads(value)
+            if isinstance(v, str):
+                return v
+        except Exception:
+            pass
+    return value

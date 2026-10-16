@@ -7,6 +7,12 @@ APP_NAME = "lumen"
 
 
 def _app_dir() -> Path:
+    # 测试/CI 可通过 LUMEN_DATA_DIR 重定向数据目录，避免污染用户本机知识库
+    override = os.environ.get("LUMEN_DATA_DIR")
+    if override:
+        d = Path(override).expanduser()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
     home = Path.home()
     if sys.platform == "darwin":
         base = home / "Library" / "Application Support"

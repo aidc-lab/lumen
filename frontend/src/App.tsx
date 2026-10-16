@@ -5,9 +5,8 @@ import CourseWorkspace from './pages/CourseWorkspace'
 import CoursesPage from './pages/CoursesPage'
 import HomePage from './pages/HomePage'
 import BookPage from './pages/BookPage'
-import WizardPage from './pages/WizardPage'
 import BankPage from './pages/BankPage'
-import QuizPage from './pages/QuizPage'
+import PaperPage from './pages/PaperPage'
 import ReportPage from './pages/ReportPage'
 import QAPage from './pages/QAPage'
 import ModelsPage from './pages/ModelsPage'
@@ -23,7 +22,7 @@ export type View =
 
 /** 课程工作区内的功能页 */
 export type SubView =
-  | 'book' | 'wizard' | 'bank' | 'quiz' | 'report' | 'wrong' | 'qa'
+  | 'book' | 'bank' | 'paper' | 'report' | 'wrong' | 'qa'
 
 export type NavTarget = View | SubView
 
@@ -115,7 +114,7 @@ export default function App() {
       />
     ),
     tasks: <TasksPage />,
-    models: <ModelsPage />,
+    models: <ModelsPage go={navigate} />,
     settings: <SettingsPage />,
   }
 

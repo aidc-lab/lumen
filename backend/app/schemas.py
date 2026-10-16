@@ -262,6 +262,31 @@ class MessageOut(BaseModel):
 
 class ChatIn(BaseModel):
     content: str
+    model_id: str | None = None
+    chapter_ids: list[str] | None = None
+
+
+# ---- 试卷（P0：试卷列表 / 详情 / 做题记录）----
+class PaperOut(BaseModel):
+    id: str
+    course_id: str
+    title: str
+    duration_min: int
+    total_score: int
+    created_at: str
+    question_count: int = 0
+
+
+class AttemptOut(BaseModel):
+    id: str
+    paper_id: str
+    paper_title: str | None = None
+    score: int | None = None
+    total_score: int = 0
+    status: str
+    started_at: str
+    finished_at: str | None = None
+    question_count: int = 0
 
 
 # ---- 设置 ----

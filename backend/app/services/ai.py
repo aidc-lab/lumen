@@ -14,7 +14,7 @@ from sqlalchemy import delete, select
 from app.core.db import SessionLocal
 from app.models import (Answer, Attempt, Chapter, Exercise, LessonPlan,
                         Message, Model, PaperQuestion, PromptTemplate,
-                        Session, Summary, Textbook)
+                        Session, Summary, Textbook, parse_setting)
 from app.services import llm
 from app.services.indexing import hybrid_search
 from app.services.llm import LLMError, extract_json
@@ -48,7 +48,7 @@ async def resolve_model(db, model_id: str | None, task_type: str, capability: st
     from app.models import Setting
     srow = db.get(Setting, f"default_model:{task_type}")
     if srow:
-        m = db.get(Model, srow.value)
+        m = db.get(Model, parse_setting(srow.value))
         if m is not None and capability in (m.capabilities or []):
             return m
     m = await get_default_model(db, task_type, capability)
@@ -251,7 +251,9 @@ def _validate_questions(questions: list[dict], types: dict) -> list[dict]:
 
 
 # ---------------- 答疑（RAG + 引用） ----------------
-async def answer_stream(session_id: str, question: str, model_id: str | None = None):
+async def answer_stream(session_id: str, question: str,
+                        model_id: str | None = None,
+                        chapter_ids: list[str] | None = None):
     """RAG 答疑：检索 → 拼接上下文 → 流式生成 → 引用抽取。
 
     产出 (event, data) 元组流：
@@ -263,8 +265,8 @@ async def answer_stream(session_id: str, question: str, model_id: str | None = N
         sess = db.get(Session, session_id)
         if sess is None:
             raise ValueError(f"会话不存在: {session_id}")
-        scope = sess.scope or {}
-        chapter_ids = scope.get("chapter_ids") or None
+        # 本次显式指定的章节范围优先；否则沿用会话持久化的 scope
+        ids = chapter_ids if chapter_ids is not None else ((sess.scope or {}).get("chapter_ids") or None)
         model = await resolve_model(db, model_id, "答疑")
         sess.mode = sess.mode or "direct"
 
@@ -285,8 +287,16 @@ async def answer_stream(session_id: str, question: str, model_id: str | None = N
             context_blocks.append(f"【片段 {i}｜{ref}】\n{h['snippet']}")
         context = "\n\n".join(context_blocks)
 
-        # 保存用户消息
-        user_msg = Message(id=uuid.uuid4().hex, session_id=session_id, role="user", content=question)
+        # 保存用户消息（附带本次 @ 引用，便于历史回看）
+        ref_labels: list[str] = []
+        for cid in (ids or []):
+            ch = db.get(Chapter, cid)
+            if ch is None:
+                continue
+            tb = db.get(Textbook, ch.textbook_id)
+            ref_labels.append(f"《{tb.title if tb else ''}》{ch.title}")
+        user_msg = Message(id=uuid.uuid4().hex, session_id=session_id, role="user", content=question,
+                           citations={"refs": ref_labels} if ref_labels else None)
         db.add(user_msg)
         db.commit()
 

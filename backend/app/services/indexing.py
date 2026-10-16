@@ -108,11 +108,12 @@ async def rebuild_chapter_index(chapter_id: str, job=None) -> int:
 
 
 def _embedding_config(db) -> tuple[int, str | None]:
-    from app.models import Setting
+    from app.models import Setting, parse_setting
     row = db.get(Setting, "embedding_dim")
-    dim = int(row.value) if row and str(row.value).isdigit() else 1024
+    raw = parse_setting(row.value) if row else ""
+    dim = int(raw) if str(raw).isdigit() else 1024
     srow = db.get(Setting, "default_embedding_model_id")
-    return dim, (srow.value if srow else None) or None
+    return dim, (parse_setting(srow.value) if srow else None) or None
 
 
 async def hybrid_search(query: str, chapter_ids: list[str] | None = None, k: int = 8) -> list[dict]:

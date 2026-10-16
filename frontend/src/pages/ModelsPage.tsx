@@ -1,9 +1,11 @@
 import { useContext, useEffect, useState } from 'react'
 import { api } from '../api'
-import { ToastContext } from '../App'
+import { ToastContext, type NavTarget } from '../App'
 import type { ModelDef, ModelTestResult } from '../types'
 
-export default function ModelsPage() {
+type Props = { go: (v: NavTarget) => void }
+
+export default function ModelsPage({ go }: Props) {
   const toast = useContext(ToastContext)
   const [models, setModels] = useState<ModelDef[]>([])
   const [showForm, setShowForm] = useState(false)
@@ -47,23 +49,13 @@ export default function ModelsPage() {
     } catch (e) { toast('添加失败：' + (e as Error).message) }
   }
 
-  async function setDefault(task: string, modelId: string) {
-    // 通过 settings 存储任务级默认模型映射
-    const { getSettings, putSettings } = await import('../settingsStore')
-    const s = await getSettings()
-    s[`default_model:${task}`] = modelId
-    await putSettings(s)
-    toast(`「${task}」默认模型已切换`)
-  }
-
-  const TASKS = ['答疑', '总结', '出题', '阅卷', '教案', '向量化']
-
   return (
     <>
       <div className="page-head">
         <h1>🤖 模型管理</h1>
         <span className="sub">统一经 OpenAI 兼容网关接入 · Key 本地加密（AES-256-GCM + 系统钥匙串）</span>
         <div className="spacer" />
+        <button className="btn btn-ghost" onClick={() => go('settings')}>⚙️ 默认模型设置</button>
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>＋ 新建模型</button>
       </div>
       {error && <div className="error-box">{error}</div>}
@@ -140,22 +132,6 @@ export default function ModelsPage() {
         {models.length === 0 && !error && (
           <div className="empty">尚未配置模型 —— 云端 API（自带 Key）或自建 Ollama/LM Studio 均可</div>
         )}
-      </div>
-      <div className="page-head" style={{ marginTop: 22 }}>
-        <h1 style={{ fontSize: 16 }}>任务级默认模型</h1>
-        <span className="sub">每个任务记住上次使用的模型</span>
-      </div>
-      <div className="card card-pad">
-        {TASKS.map((t) => (
-          <div className="set-row" key={t}>
-            <div className="lbl"><div className="t">{t}</div></div>
-            <select onChange={(e) => setDefault(t, e.target.value)} defaultValue="">
-              <option value="" disabled>选择默认模型…</option>
-              {models.filter((m) => m.capabilities.includes(t === '向量化' ? 'embedding' : 'text'))
-                .map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </div>
-        ))}
       </div>
     </>
   )

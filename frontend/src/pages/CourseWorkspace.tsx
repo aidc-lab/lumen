@@ -1,8 +1,7 @@
 import type { NavTarget, SubView } from '../App'
 import BookPage from './BookPage'
-import WizardPage from './WizardPage'
 import BankPage from './BankPage'
-import QuizPage from './QuizPage'
+import PaperPage from './PaperPage'
 import ReportPage from './ReportPage'
 import QAPage from './QAPage'
 import WrongPage from './WrongPage'
@@ -15,9 +14,8 @@ interface Props {
 
 const TABS: { key: SubView; ico: string; label: string }[] = [
   { key: 'book', ico: '📖', label: '教材' },
-  { key: 'wizard', ico: '🧙', label: '出题向导' },
   { key: 'bank', ico: '🗂️', label: '题库' },
-  { key: 'quiz', ico: '⏱️', label: '测验' },
+  { key: 'paper', ico: '📝', label: '试卷' },
   { key: 'report', ico: '📊', label: '成绩单' },
   { key: 'wrong', ico: '📕', label: '错题本' },
   { key: 'qa', ico: '💬', label: '答疑' },
@@ -36,10 +34,9 @@ export default function CourseWorkspace({ courseId, sub, go }: Props) {
   const render = () => {
     switch (sub) {
       case 'book': return <BookPage go={go} courseId={courseId} />
-      case 'wizard': return <WizardPage go={go} courseId={courseId} />
       case 'bank': return <BankPage go={go} courseId={courseId} />
-      case 'quiz': return <QuizPage go={go} courseId={courseId} />
-      case 'report': return <ReportPage go={go} />
+      case 'paper': return <PaperPage go={go} courseId={courseId} />
+      case 'report': return <ReportPage go={go} courseId={courseId} />
       case 'wrong': return <WrongPage go={go} courseId={courseId} />
       case 'qa': return <QAPage courseId={courseId} />
     }

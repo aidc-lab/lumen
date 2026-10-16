@@ -1,18 +1,22 @@
 """端到端集成测试（需要运行中的 sidecar + 模拟 LLM）。
 
+⚠️ 会写入 sidecar 所在的真实数据库（创建测试课程/模型），因此默认跳过，
+   显式设置 LUMEN_E2E=1 才运行，避免污染用户本机知识库。
+
 启动方式：
     # 终端 1：模拟 LLM（OpenAI 兼容）
     python tests/mock_llm.py
     # 终端 2：sidecar
     .venv/bin/python run.py
     # 运行测试
-    pytest tests/test_e2e.py -v
+    LUMEN_E2E=1 pytest tests/test_e2e.py -v
 
 覆盖：课程 CRUD → 模型注册/连通性 → 教材导入（结构识别+切分+索引）
 → 全文检索 → 章节总结 → 习题生成 → 组卷判分 → 答疑 RAG 流式引用。
 """
 import http.client
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -23,6 +27,11 @@ from pathlib import Path
 import pytest
 
 _SIDECAR = Path.home() / "Library" / "Application Support" / "lumen" / "sidecar.json"
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("LUMEN_E2E") != "1",
+    reason="集成测试会写入运行中的 sidecar 数据，需 LUMEN_E2E=1 显式开启",
+)
 
 
 @pytest.fixture(scope="module")

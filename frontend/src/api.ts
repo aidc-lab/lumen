@@ -51,6 +51,56 @@ export const api = {
   del: <T>(path: string) => request<T>('DELETE', path),
 }
 
+/** POST 版 SSE：EventSource 只支持 GET，答疑等用 POST 返回流的接口需要 fetch 读流。
+ *  解析 `event: xxx` / `data: yyy` 分块后回调 onEvent。 */
+export async function openPostSSE(
+  path: string,
+  body: unknown,
+  onEvent: (event: string, data: any) => void,
+  onError?: (e: unknown) => void,
+): Promise<{ close: () => void }> {
+  const { port, token } = await getSidecarInfo()
+  const isDev = !!import.meta.env.DEV
+  const base = isDev ? '' : `http://127.0.0.1:${port}`
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(`${base}${path}`, {
+    method: 'POST', headers, body: JSON.stringify(body ?? {}),
+  })
+  if (!res.ok || !res.body) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e?.error?.message || e?.detail?.error?.message || res.statusText)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let closed = false
+
+  const pump = async () => {
+    while (!closed) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        let ev = 'message'
+        const dataLines: string[] = []
+        for (const line of chunk.split('\n')) {
+          if (line.startsWith('event:')) ev = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+        }
+        if (!dataLines.length) continue
+        const raw = dataLines.join('\n')
+        try { onEvent(ev, JSON.parse(raw)) } catch { onEvent(ev, raw) }
+      }
+    }
+  }
+  pump().catch((e) => { if (!closed) onError?.(e) })
+  return { close: () => { closed = true; reader.cancel().catch(() => {}) } }
+}
+
 /** SSE：任务进度 / 答疑流。令牌经 query 传递（EventSource 不支持自定义头）。
  *  注意：EventSource 在 openSSE 内部异步创建，此处返回带 close() 的句柄，
  *  调用方经 esp.close() 关闭（直接返回内部 es 会因异步赋值为 undefined）。 */

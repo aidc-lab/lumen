@@ -15,12 +15,12 @@ from app.core.db import SessionLocal, VEC_AVAILABLE
 from app.core.security import encrypt
 from app.models import (AITask, Answer, Attempt, Chapter, ChapterChunk, Course, Exercise,
                         LessonPlan, Message, Model, Paper, PaperQuestion, Session,
-                        Setting, Summary, Textbook)
-from app.schemas import (ChatIn, ChapterUpdate, ChapterOut, ChapterDetail, ChunkOut,
+                        Setting, Summary, Textbook, WrongEntry, parse_setting)
+from app.schemas import (AttemptOut, ChatIn, ChapterUpdate, ChapterOut, ChapterDetail, ChunkOut,
                          CourseCreate, CourseOut, CourseUpdate, ExerciseGenerate,
                          ExerciseOut, ExerciseUpdate, ModelCreate, ModelOut,
-                         ModelTestResult, ModelUpdate, PaperCreate, SearchResult, SessionCreate,
-                         SessionOut, MessageOut, SummaryGenerate, SummaryOut,
+                         ModelTestResult, ModelUpdate, PaperCreate, PaperOut, SearchResult,
+                         SessionCreate, SessionOut, MessageOut, SummaryGenerate, SummaryOut,
                          TaskOut, TextbookImport, TextbookOut)
 from app.services import ai, indexing, parsing
 from app.services.jobs import jobs
@@ -398,6 +398,26 @@ def delete_exercise(exercise_id: str):
 
 
 # ============ 测验（P0：客观题自动判分，主观题留待 AI 阅卷 P2） ============
+@router.get("/papers", response_model=list[PaperOut])
+def list_papers(course_id: str | None = None):
+    """列出试卷（course_id 过滤本课程全部试卷）。"""
+    with SessionLocal() as db:
+        q = select(Paper)
+        if course_id:
+            q = q.where(Paper.course_id == course_id)
+        rows = list(db.scalars(q.order_by(Paper.created_at.desc())))
+        out = []
+        for p in rows:
+            n = db.execute(
+                select(func.count()).select_from(PaperQuestion)
+                .where(PaperQuestion.paper_id == p.id)).scalar() or 0
+            out.append(PaperOut(id=p.id, course_id=p.course_id, title=p.title,
+                                duration_min=p.duration_min, total_score=p.total_score,
+                                created_at=p.created_at.isoformat(),
+                                question_count=int(n)))
+        return out
+
+
 @router.post("/papers", status_code=201)
 def create_paper(body: PaperCreate):
     import random
@@ -451,7 +471,8 @@ def get_paper(paper_id: str):
             questions.append({
                 "order": pq.order, "score": pq.score,
                 "exercise_id": ex.id, "type": ex.type, "stem": ex.stem,
-                "options": ex.options, "difficulty": ex.difficulty,
+                "options": ex.options, "answer": ex.answer, "explanation": ex.explanation,
+                "difficulty": ex.difficulty,
             })
         return {"id": paper.id, "title": paper.title, "duration_min": paper.duration_min,
                 "total_score": paper.total_score, "questions": questions}
@@ -513,6 +534,99 @@ def submit_attempt(attempt_id: str, answers: dict[str, str]):
         if grading_task_id:
             result["grading_task_id"] = grading_task_id
         return result
+
+
+@router.get("/attempts", response_model=list[AttemptOut])
+def list_attempts(course_id: str | None = None):
+    """列出作答记录（成绩单数据源）。仅包含已提交完成的作答，course_id 过滤本课程下全部试卷/练习的尝试。"""
+    with SessionLocal() as db:
+        if course_id:
+            paper_ids = [r[0] for r in db.execute(
+                select(Paper.id).where(Paper.course_id == course_id)).all()]
+            if not paper_ids:
+                return []
+            rows = list(db.scalars(
+                select(Attempt).where(Attempt.paper_id.in_(paper_ids),
+                                      Attempt.status.in_(["submitted", "graded"]))
+                .order_by(Attempt.started_at.desc()).limit(100)))
+        else:
+            rows = list(db.scalars(
+                select(Attempt).where(Attempt.status.in_(["submitted", "graded"]))
+                .order_by(Attempt.started_at.desc()).limit(100)))
+        out = []
+        for a in rows:
+            paper = db.get(Paper, a.paper_id)
+            n = db.execute(
+                select(func.count()).select_from(PaperQuestion)
+                .where(PaperQuestion.paper_id == a.paper_id)).scalar() or 0
+            out.append(AttemptOut(id=a.id, paper_id=a.paper_id,
+                                  paper_title=paper.title if paper else None,
+                                  score=a.score, total_score=paper.total_score if paper else 0,
+                                  status=a.status,
+                                  started_at=a.started_at.isoformat(),
+                                  finished_at=a.finished_at.isoformat() if a.finished_at else None,
+                                  question_count=int(n)))
+        return out
+
+
+# ============ 练习抽题（题库“去练习” / 错题本“专练”） ============
+@router.post("/courses/{course_id}/practice", status_code=201)
+def practice(course_id: str, body: dict):
+    """从课程已发布题库中随机抽题，创建一份练习试卷并生成作答记录。"""
+    import random
+    count = max(1, min(int(body.get("count") or 10), 200))
+    prefer_unanswered = bool(body.get("prefer_unanswered"))
+    include_wrong = bool(body.get("include_wrong"))
+    force_ids = body.get("force_ids") or []
+    if not isinstance(force_ids, list):
+        force_ids = []
+    with SessionLocal() as db:
+        pool = list(db.scalars(select(Exercise).where(Exercise.course_id == course_id, Exercise.status == "published")))
+        if not pool:
+            raise _err("E_STATE", "该课程暂无已发布题目，请先生成题目并发布到题库", 400)
+        answered: set[str] = set()
+        if prefer_unanswered:
+            paper_ids = [r[0] for r in db.execute(select(Paper.id).where(Paper.course_id == course_id)).all()]
+            if paper_ids:
+                attempt_ids = [r[0] for r in db.execute(select(Attempt.id).where(Attempt.paper_id.in_(paper_ids))).all()]
+                if attempt_ids:
+                    answered = {r[0] for r in db.execute(select(Answer.question_id).where(Answer.attempt_id.in_(attempt_ids))).all()}
+        wrong_ids = {e.question_id for e in db.scalars(select(WrongEntry).where(WrongEntry.course_id == course_id))}
+        by_id = {ex.id: ex for ex in pool}
+        chosen: list[str] = []
+        for fid in force_ids:
+            if fid in by_id and fid not in chosen:
+                chosen.append(fid)
+        if include_wrong:
+            for wid in wrong_ids:
+                if wid in by_id and wid not in chosen and len(chosen) < count:
+                    chosen.append(wid)
+        rest = [ex.id for ex in pool if ex.id not in chosen and (not prefer_unanswered or ex.id not in answered)]
+        random.shuffle(rest)
+        chosen.extend(rest)
+        chosen = chosen[:count]
+        if not chosen:
+            raise _err("E_STATE", "没有可抽取的题目", 400)
+        paper = Paper(id=_uid(), course_id=course_id,
+                      title=f"练习 · {len(chosen)} 题", duration_min=0, config={"practice": True})
+        db.add(paper)
+        db.commit()
+        for i, eid in enumerate(chosen, 1):
+            db.add(PaperQuestion(paper_id=paper.id, exercise_id=eid, order=i, score=10))
+        paper.total_score = len(chosen) * 10
+        db.commit()
+        attempt = Attempt(id=_uid(), paper_id=paper.id, config_snapshot={"duration_min": 0})
+        db.add(attempt)
+        db.commit()
+        questions = []
+        for i, eid in enumerate(chosen, 1):
+            ex = by_id[eid]
+            questions.append({
+                "id": ex.id, "type": ex.type, "stem": ex.stem,
+                "options": ex.options, "difficulty": ex.difficulty,
+                "order": i, "score": 10,
+            })
+        return {"attempt_id": attempt.id, "paper_id": paper.id, "questions": questions}
 
 
 @router.get("/attempts/{attempt_id}/report")
@@ -659,36 +773,86 @@ def export_paper(paper_id: str, format: str = "md",
 
 
 # ============ 错题本（P2 雏形） ============
-@router.get("/courses/{course_id}/wrong-questions")
-def wrong_questions(course_id: str, limit: int = 100):
-    """错题本：聚合该课程全部作答记录中判错的题目。"""
-    with SessionLocal() as db:
-        paper_ids = [r[0] for r in db.execute(
-            select(Paper.id).where(Paper.course_id == course_id)).all()]
-        if not paper_ids:
-            return {"items": []}
+def _wrong_items(db, course_id: str, limit: int) -> list[dict]:
+    """错题本：聚合判错作答记录与用户手动加入的条目。"""
+    paper_ids = [r[0] for r in db.execute(
+        select(Paper.id).where(Paper.course_id == course_id)).all()]
+    err_counts: dict[str, int] = {}
+    if paper_ids:
         attempt_ids = [r[0] for r in db.execute(
             select(Attempt.id).where(Attempt.paper_id.in_(paper_ids))).all()]
-        if not attempt_ids:
-            return {"items": []}
-        rows = db.execute(
-            select(Answer.question_id, func.count().label("errs"))
-            .where(Answer.attempt_id.in_(attempt_ids),
-                   Answer.is_correct == False)
-            .group_by(Answer.question_id)
-            .order_by(func.count().desc())
-            .limit(limit)).all()
-        items = []
-        for qid, errs in rows:
-            ex = db.get(Exercise, qid)
-            if ex is None:
-                continue
-            items.append({
-                "question_id": qid, "type": ex.type, "stem": ex.stem,
-                "options": ex.options, "answer": ex.answer,
-                "explanation": ex.explanation, "wrong_count": errs,
-            })
-        return {"items": items}
+        if attempt_ids:
+            rows = db.execute(
+                select(Answer.question_id, func.count().label("errs"))
+                .where(Answer.attempt_id.in_(attempt_ids),
+                       Answer.is_correct == False)
+                .group_by(Answer.question_id)).all()
+            err_counts = {qid: int(errs) for qid, errs in rows}
+    # 手动加入的条目（即使未做过也会出现在错题本）
+    entries = list(db.scalars(
+        select(WrongEntry).where(WrongEntry.course_id == course_id)
+        .order_by(WrongEntry.added_at.desc())))
+    seen: set[str] = set()
+    items: list[dict] = []
+    for e in entries:
+        seen.add(e.question_id)
+        ex = db.get(Exercise, e.question_id)
+        if ex is None:
+            continue
+        items.append({
+            "question_id": ex.id, "entry_id": f"entry:{e.course_id}:{e.question_id}", "type": ex.type,
+            "stem": ex.stem, "options": ex.options, "answer": ex.answer,
+            "explanation": ex.explanation, "wrong_count": err_counts.get(ex.id, 0),
+            "manual": True,
+        })
+    # 聚合的答错题目（未手动加入的）
+    for qid, errs in sorted(err_counts.items(), key=lambda kv: kv[1], reverse=True):
+        if qid in seen:
+            continue
+        ex = db.get(Exercise, qid)
+        if ex is None:
+            continue
+        items.append({
+            "question_id": qid, "entry_id": None, "type": ex.type, "stem": ex.stem,
+            "options": ex.options, "answer": ex.answer,
+            "explanation": ex.explanation, "wrong_count": errs,
+            "manual": False,
+        })
+    items.sort(key=lambda it: it["wrong_count"], reverse=True)
+    return items[:limit]
+
+
+@router.get("/courses/{course_id}/wrong-questions")
+def wrong_questions(course_id: str, limit: int = 100):
+    with SessionLocal() as db:
+        return {"items": _wrong_items(db, course_id, limit)}
+
+
+@router.post("/courses/{course_id}/wrong-questions", status_code=201)
+def add_wrong_question(course_id: str, body: dict):
+    """将某题加入该课程错题本（幂等）。"""
+    qid = body.get("question_id")
+    if not qid:
+        raise _err("E_INVALID", "缺少 question_id", 400)
+    with SessionLocal() as db:
+        ex = db.get(Exercise, qid)
+        if ex is None or ex.course_id != course_id:
+            raise _err("E_NOT_FOUND", "题目不存在或不属于该课程", 404)
+        row = db.get(WrongEntry, (course_id, qid))
+        if row is None:
+            db.add(WrongEntry(course_id=course_id, question_id=qid))
+            db.commit()
+        return {"ok": True}
+
+
+@router.delete("/courses/{course_id}/wrong-questions/{question_id}", status_code=204)
+def remove_wrong_question(course_id: str, question_id: str):
+    """从该课程错题本移除（手动加入的条目）。"""
+    with SessionLocal() as db:
+        row = db.get(WrongEntry, (course_id, question_id))
+        if row is not None:
+            db.delete(row)
+            db.commit()
 
 
 @router.post("/sessions", response_model=SessionOut, status_code=201)
@@ -736,7 +900,10 @@ async def chat_message(session_id: str, body: ChatIn, request: Request):
     """流式答疑：SSE。事件：delta / citation / done / error。"""
     async def event_stream():
         try:
-            async for event, data in ai.answer_stream(session_id, body.content):
+            async for event, data in ai.answer_stream(
+                    session_id, body.content,
+                    model_id=body.model_id,
+                    chapter_ids=body.chapter_ids):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
@@ -914,18 +1081,20 @@ def upsert_prompt_template(task_type: str, content: str, name: str = ""):
 @router.get("/settings")
 def get_settings():
     with SessionLocal() as db:
-        return {"settings": {r.key: r.value for r in db.scalars(select(Setting))}}
+        return {"settings": {r.key: parse_setting(r.value) for r in db.scalars(select(Setting))}}
 
 
 @router.put("/settings")
 def put_settings(body: dict):
     with SessionLocal() as db:
         for k, v in body.items():
+            # 字符串原样存（历史数据曾被 json.dumps 包一层引号，读取侧用 parse_setting 兼容）
+            val = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
             row = db.get(Setting, k)
             if row is None:
-                db.add(Setting(key=k, value=json.dumps(v, ensure_ascii=False)))
+                db.add(Setting(key=k, value=val))
             else:
-                row.value = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
+                row.value = val
         db.commit()
         return {"ok": True}
 
