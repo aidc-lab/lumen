@@ -26,7 +26,11 @@ from pathlib import Path
 
 import pytest
 
-_SIDECAR = Path.home() / "Library" / "Application Support" / "lumen" / "sidecar.json"
+# 数据目录可由 LUMEN_DATA_DIR 重定向（隔离测试，避免写入本机知识库），
+# 与 sidecar 启动时保持一致即可。
+_DATA_DIR = Path(os.environ.get("LUMEN_DATA_DIR") or "").expanduser() or (
+    Path.home() / "Library" / "Application Support" / "lumen")
+_SIDECAR = _DATA_DIR / "sidecar.json"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("LUMEN_E2E") != "1",
@@ -317,6 +321,25 @@ def test_full_workflow(api):
           f"{len(tbs)} -> {len(tbs_after)}")
     st, ch2 = api("GET", f"/textbooks/{tb2}/chapters")
     check("章节随教材删除", st == 200 and len(ch2) == 0)
+
+    # 17. 删除试卷（级联清理作答/答卷，题库题目保留）
+    st, papers_before = api("GET", f"/papers?course_id={course_id}")
+    check("删除前试卷列表", st == 200 and len(papers_before) >= 2,
+          f"got {len(papers_before)}")
+    st, _ = api("DELETE", f"/papers/{paper['id']}")
+    check("删除试卷", st == 204, f"status={st}")
+    st, papers_after = api("GET", f"/papers?course_id={course_id}")
+    check("试卷数减少 1", len(papers_after) == len(papers_before) - 1,
+          f"{len(papers_before)} -> {len(papers_after)}")
+    st, _ = api("GET", f"/papers/{paper['id']}")
+    check("已删除试卷返回 404", st == 404, f"status={st}")
+    st, _ = api("DELETE", f"/papers/{paper['id']}")
+    check("重复删除返回 404", st == 404, f"status={st}")
+    st, attempts_after = api("GET", f"/attempts?course_id={course_id}")
+    check("试卷的作答记录一并删除", st == 200 and len(attempts_after) == 1,
+          f"attempts={len(attempts_after)}")
+    st, pub = api("GET", f"/exercises?course_id={course_id}&status=published")
+    check("题库题目保留", st == 200 and len(pub) >= 3, f"got {len(pub)}")
 
 
 if __name__ == "__main__":

@@ -478,6 +478,26 @@ def get_paper(paper_id: str):
                 "total_score": paper.total_score, "questions": questions}
 
 
+@router.delete("/papers/{paper_id}", status_code=204)
+def delete_paper(paper_id: str):
+    """删除试卷：级联清理试卷-题目关联、作答记录与答卷。
+
+    题库题目（exercises）不随试卷删除——它们可能被其他试卷或错题本引用。
+    """
+    with SessionLocal() as db:
+        paper = db.get(Paper, paper_id)
+        if paper is None:
+            raise _err("E_NOT_FOUND", f"试卷不存在: {paper_id}", 404)
+        attempt_ids = [r[0] for r in db.execute(
+            select(Attempt.id).where(Attempt.paper_id == paper_id)).all()]
+        if attempt_ids:
+            db.execute(delete(Answer).where(Answer.attempt_id.in_(attempt_ids)))
+        db.execute(delete(PaperQuestion).where(PaperQuestion.paper_id == paper_id))
+        db.execute(delete(Attempt).where(Attempt.paper_id == paper_id))
+        db.delete(paper)
+        db.commit()
+
+
 @router.post("/attempts/{attempt_id}/submit")
 def submit_attempt(attempt_id: str, answers: dict[str, str]):
     """提交答卷：客观题规则判分（归一化精确匹配）；主观题标记待阅卷。"""
