@@ -1,109 +1,150 @@
 # lumen
 
-本地优先（local-first）的 AI 学习 / 教学辅助桌面工具。把教材变成**可查询、可练习、可测评、可讲解**的私有知识库。
+English | [简体中文](./README.zh-CN.md)
 
-## 架构
+**lumen** is a local-first AI study & teaching companion. It turns your course materials into a private knowledge base you can **search, practice, assess, and get explained** — entirely on your own machine.
+
+## Highlights
+
+- **Local first**: all data, indexes, and files stay on your computer (`~/Library/Application Support/lumen/`). No account, no telemetry, no remote server.
+- **Bring your own model**: one OpenAI-compatible gateway for cloud APIs (your own key) or self-hosted local models (Ollama / LM Studio).
+- **Hybrid retrieval**: FTS5 full-text search (CJK character-level, BM25) for recall first; upgrade to vector search + RRF fusion once an embedding model is configured.
+- **Course-centric**: a course is the top-level boundary (like a "project"). Materials, exercises, quizzes, grades, mistakes, and Q&A all belong to the current course.
+- **Keys stay safe**: API keys are encrypted with AES-256-GCM, with the master key stored in the OS keychain.
+
+## What you can do
+
+| Area | Description |
+| --- | --- |
+| Import materials | PDF (bookmark structure) / DOCX / MD / TXT / EPUB, multi-select; auto-chunking when there is no structure |
+| Browse chapters | Paragraph blocks (page + paragraph number), one-click citation copy, chapter tree |
+| Hybrid search | Full-text + vector (RRF fusion) across your materials, with cited sources |
+| Chapter summary | LLM-generated Markdown summary; regenerate replaces the previous version |
+| Exercise wizard | Schema-constrained question generation with a draft box for review |
+| Question bank / Quiz | Build papers, take them, auto-grade objective questions |
+| Subjective grading | Async AI grading after submission (score points / deductions / suggestions), manual re-grade supported |
+| Grades / Mistakes | Per-course grade report; mistakes sorted by error count |
+| Q&A | RAG with citation provenance, streaming output, scoped by course and chapter |
+| Lesson plans | Markdown lesson plans generated per course and chapter |
+| Export | Export papers as Markdown (PDF requires Typst: `brew install typst`) |
+| Model management | CRUD, connectivity test, per-task default models, locally encrypted keys |
+| Task center | Async jobs with SSE progress, cancellable, history survives restarts |
+
+## Quick start
+
+### Prerequisites
+
+- macOS / Linux / Windows
+- Python **3.10+**
+- Node.js **18+** and `make`
+- (optional) A local model runtime: [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai)
+- (optional) [Typst](https://typst.app) for PDF export: `brew install typst`
+
+### Install and run (development)
+
+```bash
+git clone <your-repo-url> lumen
+cd lumen
+
+make install   # all dependencies: backend venv + frontend + electron
+make dev       # one command: mock LLM + sidecar + frontend dev server
+```
+
+Open the URL printed by the terminal. Stop everything with `make stop`.
+
+> The mock LLM bundled in `make dev` is for testing only. For real usage, configure a cloud API (your own key) or a self-hosted Ollama / LM Studio endpoint under **Model management**.
+
+### Run step by step (equivalent to `make dev`)
+
+```bash
+make mock            # terminal 1: mock LLM (port 18100, testing only)
+make start-sidecar   # terminal 2: backend sidecar (prints port and token on stdout)
+make dev-frontend    # terminal 3: frontend dev server (/api proxied to the sidecar)
+```
+
+### Launch the desktop app (Electron)
+
+```bash
+make start-electron  # builds the frontend first, then starts the desktop shell
+```
+
+In production mode the sidecar serves `frontend/dist` and Electron loads it directly — no dev server needed.
+
+### Configure a model
+
+1. Open **Model management** in the sidebar → **Add model**.
+2. Fill in an OpenAI-compatible Base URL, API key, and model name (any key works for local models).
+3. Run **Connectivity test** to verify.
+4. Under **Settings**, pick the default model per task (Q&A / summary / exercises / grading / lesson plan / embedding).
+
+## How to use it
+
+1. **Create a course** (the top-level boundary, similar to a "project").
+2. **Import materials**: native file dialog (multi-select) on desktop, multipart upload in the browser.
+3. Open the course workspace and switch tabs: **Materials / Exercise wizard / Question bank / Quiz / Grades / Mistakes / Q&A**.
+4. Long-running jobs appear in the **Task center**, where you can watch progress or cancel them.
+
+The sidebar has exactly five items: **Overview / My courses / Task center / Model management / Settings**.
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `make help` | List all targets |
+| `make install` | Install all dependencies (backend venv + frontend + electron) |
+| `make dev` | One-shot dev mode (mock LLM + sidecar + frontend), `Ctrl+C` stops all |
+| `make stop` | Stop processes started by `make dev` |
+| `make test` | Backend tests |
+| `make e2e` | E2E integration tests (run `make mock` and `make start-sidecar` first) |
+| `make build-frontend` | Build the frontend (outputs `frontend/dist`) |
+| `make start-electron` | Start the desktop app |
+| `make clean` | Remove build artifacts and caches |
+
+## Architecture
 
 ```
-Electron 外壳（窗口 / 菜单 / 进程管理）
-      │ 启动并守护
+Electron shell (window / menu / process management)
+      │ spawns and supervises
       ▼
-Python sidecar（FastAPI，仅监听 127.0.0.1:随机端口，令牌认证）
+Python sidecar (FastAPI, bound to 127.0.0.1:random port, token auth)
       │
-      ├── SQLite（WAL）：课程 / 章节 / 题目 / 任务 / 设置
-      ├── FTS5：全文检索（BM25）
-      ├── sqlite-vec（可选）：向量检索（余弦，RRF 混合）
-      └── LLM 网关：统一 OpenAI 兼容协议
-            ├── 云端 API（用户自带 Key）
-            └── 用户自建本地模型（Ollama / LM Studio，同方式接入）
+      ├── SQLite (WAL): courses / chapters / questions / tasks / settings
+      ├── FTS5: full-text search (BM25, CJK character-level)
+      ├── sqlite-vec (optional): vector search (cosine, RRF fusion)
+      └── LLM gateway: unified OpenAI-compatible protocol
+            ├── cloud APIs (user-provided keys)
+            └── local models (Ollama / LM Studio)
 ```
 
-前端：React 18 + TypeScript + Vite（开发模式 `npm run dev`，生产由 sidecar 托管 `frontend/dist`）。
+Frontend: React 18 + TypeScript + Vite.
 
-## 快速开始（开发）
-
-```bash
-make install        # 安装全部依赖（后端 venv + 前端 + electron）
-make dev            # 一键启动：mock LLM + sidecar + 前端（开发模式）
-make stop           # 停止 make dev 启动的进程
-make test           # 后端测试
-make e2e            # E2E 集成测试（需 make mock + make start-sidecar）
-make build-frontend # 构建前端（生产）
-make start-electron # 启动桌面应用（自动先构建前端）
-```
-
-> `make dev` 中的 mock LLM 仅用于测试；真实环境请在「模型管理」中配置
-> 云端 API（自带 Key）或自建 Ollama/LM Studio。
-
-```bash
-# 手动分步（等价于 make dev）：
-make mock           # 终端 1：模拟 LLM（端口 18100）
-make start-sidecar  # 终端 2：sidecar（stdout 打印端口与令牌）
-make dev-frontend   # 终端 3：前端开发服务器（/api 代理到 sidecar）
-```
-
-## 信息架构（课程中心化）
-
-侧边栏仅五项：**概览 / 我的课程 / 任务中心 / 模型管理 / 设置**。
-课程是一级边界（类似"项目"）：点击课程卡片进入课程工作区，
-内部以 tab 切换 **教材 / 出题向导 / 题库 / 测验 / 成绩单 / 错题本 / 答疑**，
-各功能数据均归属当前课程。任务中心与模型管理为全局能力。
-
-## P0 已实现
-
-- 课程 CRUD / 归档 / 删除（级联章节、摘要、教案与索引）
-- 教材导入：桌面版文件对话框多选（Electron）+ 浏览器版 multipart 上传；
-  PDF（书签结构）/ DOCX（标题样式）/ MD / TXT / EPUB；无结构时自动切分；
-  教材名以原文件命名；多教材并列展示（可折叠）+ 单本删除
-- 章节浏览、段落块（页码 + 段号）、引用复制
-- 全局混合检索（FTS5：CJK 逐字匹配，召回优先；配置嵌入模型后升级为 向量 + RRF 融合）
-- 章节总结（LLM，Markdown 渲染；重新生成即替换，单版本）
-- 习题生成（JSON Schema 约束，草稿箱审校）
-- 模型管理：增删改、连通性测试、Key 本地加密（AES-256-GCM + 系统钥匙串）
-- 任务中心：异步任务、进度 SSE、取消、重启后历史可见
-- 答疑（RAG + 引用溯源，流式 SSE，按课程 + 章节范围）
-- 测验：组卷、作答、客观题自动判分
-- 生产模式：sidecar 托管 `frontend/dist`，Electron 直接加载
-
-## P2 已实现
-
-- 主观题 AI 阅卷：提交答卷后异步批改（得分点 / 扣分 / 建议），支持手动重评
-- 教案生成（Markdown 渲染；重新生成即替换，单版本）
-- 试卷导出：Markdown（PDF 需安装 Typst：`brew install typst`）
-- 任务级默认模型：设置页为每个任务指定默认模型（答疑/总结/出题/阅卷/教案/向量化）
-- 错题本：按课程聚合判错题目，按错误次数排序
-
-## 验证状态
-
-- 后端 E2E 集成测试全部通过（`backend/tests/test_e2e.py`，含模拟 LLM 服务 `tests/mock_llm.py`）
-- 前端 `tsc -b && vite build` 通过
-- 生产模式静态托管验证通过（GET / 返回 SPA、/api/v1 路由优先）
-- Makefile 全部目标验证通过（`make help` / `test` / `e2e` / `build-frontend`）
-
-## 目录结构
+## Project layout
 
 ```
 lumen/
-├── docs/            # 设计文档、设计稿
-├── prototype/       # 交互原型（单文件 HTML）
-├── backend/         # Python sidecar
+├── docs/            # design docs and design drafts
+├── prototype/       # interaction prototype (single-file HTML)
+├── backend/         # Python sidecar (FastAPI + SQLite)
 │   ├── app/
-│   │   ├── api/     # REST 路由
-│   │   ├── core/    # 配置 / 数据库 / 加密 / 日志
-│   │   ├── models.py
-│   │   ├── schemas.py
-│   │   └── services/  # 任务队列 / 解析 / 索引 / LLM 网关 / AI 生成
-│   ├── run.py       # sidecar 启动器
+│   │   ├── api/     # REST routes
+│   │   ├── core/    # config / database / encryption / logging
+│   │   └── services/# job queue / parsing / indexing / LLM gateway / AI generation
+│   ├── run.py       # sidecar launcher
 │   └── requirements.txt
 ├── frontend/        # React SPA
-├── electron/        # 桌面外壳
+├── electron/        # desktop shell
+├── LICENSE
 └── README.md
 ```
 
-## 隐私
+## Data & privacy
 
-- 数据全部在本地（`~/Library/Application Support/lumen/`）
-- API Key 经 AES-256-GCM 加密，主密钥存系统钥匙串
-- 无账号、无遥测、无远程服务器
+- Everything lives locally — on macOS: `~/Library/Application Support/lumen/`
+- API keys are encrypted with AES-256-GCM; the master key is stored in the OS keychain
+- No accounts, no telemetry, no remote servers; LLM requests only go to the endpoint you configured
 
-详细设计见 `docs/设计文档.md`。
+Full design details: [`docs/设计文档.md`](./docs/设计文档.md) (Chinese).
+
+## License
+
+Released under the [MIT License](./LICENSE).
