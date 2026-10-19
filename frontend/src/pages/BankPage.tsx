@@ -23,6 +23,7 @@ export default function BankPage({ go, courseId }: Props) {
   const [keyword, setKeyword] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
   const [practice, setPractice] = useState<PracticeOpt | null>(null)
+  const [deleting, setDeleting] = useState<Exercise | null>(null)
   const [doing, setDoing] = useState<{
     attemptId: string; questions: QItem[]; paper: { title: string; duration_min: number }
   } | null>(null)
@@ -38,6 +39,16 @@ export default function BankPage({ go, courseId }: Props) {
   }
 
   useEffect(() => { refresh() }, [courseId])
+
+  async function delQuestion() {
+    if (!deleting) return
+    try {
+      await api.del(`/api/v1/exercises/${deleting.id}`)
+      setDeleting(null)
+      toast('题目已删除')
+      refresh()
+    } catch (e) { toast('删除失败：' + (e as Error).message) }
+  }
 
   const bankCount = rows.filter((q) => q.status === 'published').length
 
@@ -123,6 +134,21 @@ export default function BankPage({ go, courseId }: Props) {
           </div>
         </div>
       )}
+      {deleting && (
+        <div className="modal-mask" onClick={() => setDeleting(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>删除题目</h3>
+            <p style={{ color: 'var(--muted)', marginBottom: 16 }}>
+              确认删除题目「{deleting.stem.slice(0, 60)}{deleting.stem.length > 60 ? '…' : ''}」？<br />
+              该题将从题库、引用它的试卷及错题本中一并移除，此操作不可恢复。
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn" onClick={() => setDeleting(null)}>取消</button>
+              <button className="btn btn-danger" onClick={delQuestion}>删除</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {rows.length === 0 && !error ? (
         <div className="card empty-card">
@@ -174,13 +200,7 @@ export default function BankPage({ go, courseId }: Props) {
                     <td className="bank-ops">
                       <button className="btn btn-sm btn-ghost" onClick={() => toast('编辑器为 P1 能力')}>编辑</button>
                       <button className="btn btn-sm btn-ghost btn-danger"
-                        onClick={async () => {
-                          if (window.confirm('确定删除此题？')) {
-                            await api.del(`/api/v1/exercises/${q.id}`)
-                            toast('已删除')
-                            refresh()
-                          }
-                        }}>删除</button>
+                        onClick={() => setDeleting(q)}>删除</button>
                     </td>
                   </tr>
                 ))}

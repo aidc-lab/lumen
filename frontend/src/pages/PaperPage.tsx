@@ -53,6 +53,7 @@ export default function PaperPage({ go, courseId }: Props) {
   const [showAnswer, setShowAnswer] = useState(false)
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [deleting, setDeleting] = useState<Paper | null>(null)
 
   // 新建试卷：选教材范围 + AI 生成
   const [textbooks, setTextbooks] = useState<{ id: string; title: string }[]>([])
@@ -134,7 +135,7 @@ export default function PaperPage({ go, courseId }: Props) {
                 <div className="paper-actions">
                   <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); startQuizById(p.id) }}>去测验</button>
                   <span className="def" />
-                  <button className="btn btn-sm btn-ghost btn-danger" onClick={(e) => { e.stopPropagation(); delPaper(p.id) }}>删除</button>
+                  <button className="btn btn-sm btn-ghost btn-danger" onClick={(e) => { e.stopPropagation(); setDeleting(p) }}>删除</button>
                 </div>
               </div>
             ))}
@@ -147,6 +148,21 @@ export default function PaperPage({ go, courseId }: Props) {
               </div>
             )}
           </div>
+          {deleting && (
+            <div className="modal-mask" onClick={() => setDeleting(null)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <h3>删除试卷</h3>
+                <p style={{ color: 'var(--muted)', marginBottom: 16 }}>
+                  确认删除试卷「{deleting.title}」？<br />
+                  其作答记录与成绩单条目将一并删除，题库中的题目会保留；此操作不可恢复。
+                </p>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button className="btn" onClick={() => setDeleting(null)}>取消</button>
+                  <button className="btn btn-danger" onClick={delPaper}>删除</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -597,11 +613,12 @@ export default function PaperPage({ go, courseId }: Props) {
     } catch (e) { toast('加载试卷失败：' + (e as Error).message); setMode('list') }
   }
 
-  async function delPaper(id: string) {
-    if (!window.confirm('确定删除此试卷？')) return
+  async function delPaper() {
+    if (!deleting) return
     try {
-      await api.del(`/api/v1/papers/${id}`)
-      toast('已删除')
+      await api.del(`/api/v1/papers/${deleting.id}`)
+      setDeleting(null)
+      toast('试卷已删除')
       loadPapers()
     } catch (e) { toast('删除失败：' + (e as Error).message) }
   }
