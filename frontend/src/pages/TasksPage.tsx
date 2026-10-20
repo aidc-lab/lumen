@@ -4,7 +4,8 @@ import { ToastContext } from '../App'
 import type { Task } from '../types'
 
 const TYPE_ICON: Record<string, string> = {
-  教材导入: '📥', 章节向量化: '🧮', 章节总结: '📝', 出题: '🧙', 阅卷: '✅',
+  教材导入: '📥', 章节向量化: '🧮', 章节总结: '📝', 出题: '🧙',
+  阅卷: '✅', 'AI 阅卷': '✅', 教案生成: '📚',
 }
 
 export default function TasksPage() {
@@ -19,17 +20,20 @@ export default function TasksPage() {
     } catch (e) { setError(String(e)) }
   }
 
+  const running = tasks.filter((t) => t.status === 'running')
+  const runningKey = running.map((t) => t.id).sort().join(',')
+
   useEffect(() => {
     refresh()
-    // 对运行中的任务订阅 SSE 进度
-    const running = tasks.filter((t) => t.status === 'running')
+    // 对运行中的任务订阅 SSE 进度；按任务 id 集合重建订阅
     const closes: (() => void)[] = []
     for (const t of running) {
       const es = openSSE(`/api/v1/tasks/${t.id}/events`, () => refresh())
       closes.push(() => es.close())
     }
     return () => closes.forEach((c) => c())
-  }, [tasks.filter((t) => t.status === 'running').length])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningKey])
 
   async function cancel(id: string) {
     try {
@@ -37,6 +41,14 @@ export default function TasksPage() {
       toast('已取消')
       refresh()
     } catch (e) { toast('取消失败：' + (e as Error).message) }
+  }
+
+  async function retry(id: string) {
+    try {
+      await api.post(`/api/v1/tasks/${id}/retry`)
+      toast('已重新提交任务')
+      refresh()
+    } catch (e) { toast('重试失败：' + (e as Error).message) }
   }
 
   return (
@@ -63,8 +75,8 @@ export default function TasksPage() {
               {t.status === 'running' && (
                 <button className="btn btn-sm btn-danger" onClick={() => cancel(t.id)}>取消</button>
               )}
-              {t.status === 'failed' && (
-                <button className="btn btn-sm" onClick={() => toast('重试为 P1 能力（将切换备用模型）')}>⟳ 重试</button>
+              {(t.status === 'failed' || t.status === 'canceled') && (
+                <button className="btn btn-sm" onClick={() => retry(t.id)}>⟳ 重试</button>
               )}
             </div>
           </div>

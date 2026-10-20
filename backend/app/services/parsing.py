@@ -17,7 +17,8 @@ class ParseError(Exception):
 
 
 # ---------------- 文本抽取 ----------------
-def extract(file_path: str, file_type: str | None = None) -> "ExtractResult":
+def extract(file_path: str, file_type: str | None = None,
+            passphrase: str | None = None) -> "ExtractResult":
     ext = (file_type or "").lower().lstrip(".") or file_path.rsplit(".", 1)[-1].lower()
     extractors = {
         "pdf": _extract_pdf,
@@ -29,6 +30,8 @@ def extract(file_path: str, file_type: str | None = None) -> "ExtractResult":
     }
     if ext not in extractors:
         raise ParseError(f"不支持的文件类型 .{ext}（支持 pdf/docx/md/txt/epub）")
+    if ext == "pdf":
+        return _extract_pdf(file_path, passphrase)
     return extractors[ext](file_path)
 
 
@@ -52,7 +55,7 @@ class ExtractResult:
         return nonempty / len(self.pages)
 
 
-def _extract_pdf(path: str) -> ExtractResult:
+def _extract_pdf(path: str, passphrase: str | None = None) -> ExtractResult:
     try:
         import pymupdf as fitz  # PyMuPDF
     except ImportError:
@@ -62,6 +65,13 @@ def _extract_pdf(path: str) -> ExtractResult:
         doc = fitz.open(path)
     except Exception as e:
         raise ParseError(f"PDF 打开失败（可能加密或损坏）：{e}")
+    if getattr(doc, "needs_pass", False):
+        if not passphrase:
+            doc.close()
+            raise ParseError("PDF 已加密：请在导入时填写打开口令")
+        if not doc.authenticate(passphrase):
+            doc.close()
+            raise ParseError("PDF 口令错误，无法打开")
     res.pages = [(i + 1, page.get_text().strip()) for i, page in enumerate(doc)]
     res.word_count = sum(len(t) for _, t in res.pages)
     # PDF 书签 → 章节树

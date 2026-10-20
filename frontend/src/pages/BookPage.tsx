@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { api, openSSE } from '../api'
 import { ToastContext } from '../App'
 import type { NavTarget } from '../App'
@@ -8,12 +8,15 @@ import Markdown from '../components/Markdown'
 interface Props {
   go: (v: NavTarget) => void
   courseId: string
+  /** 全局搜索跳转：定位到指定章节 */
+  focusChapter?: string | null
+  onFocusHandled?: () => void
 }
 
 /** 章节视图：原文 / 总结 / 教案 */
 type ChapterView = 'text' | 'summary' | 'plan'
 
-export default function BookPage({ go, courseId }: Props) {
+export default function BookPage({ go, courseId, focusChapter, onFocusHandled }: Props) {
   const toast = useContext(ToastContext)
   const [books, setBooks] = useState<Textbook[]>([])
   const [chaptersByBook, setChaptersByBook] = useState<Record<string, Chapter[]>>({})
@@ -26,9 +29,12 @@ export default function BookPage({ go, courseId }: Props) {
   const [chapterView, setChapterView] = useState<ChapterView>('text')
   const [gen, setGen] = useState<{ kind: ChapterView; id: string } | null>(null)
   const [deleting, setDeleting] = useState<Textbook | null>(null)
+  const focusHandledRef = useRef<string | null>(null)
+  const curRef = useRef<string | null>(null)
 
   async function selectChapter(id: string) {
     setCur(id)
+    curRef.current = id
     setChapterView('text')
     setGen(null)
     const d = await api.get<ChapterDetail>(`/api/v1/chapters/${id}`)
@@ -41,7 +47,9 @@ export default function BookPage({ go, courseId }: Props) {
     ))
   }
 
-  async function loadBooks() {
+  useEffect(() => { curRef.current = cur }, [cur])
+
+  async function loadBooks(focus?: string | null) {
     try {
       const t = await api.get<Textbook[]>(`/api/v1/textbooks?course_id=${courseId}`)
       setBooks(t)
@@ -53,12 +61,12 @@ export default function BookPage({ go, courseId }: Props) {
       setExpanded(Object.fromEntries(t.map((b) => [b.id, true])))
       const rootOpen: Record<string, boolean> = {}
       for (const rows of Object.values(map)) {
-        // 默认展开所有根章节（不限 level：EPUB 的章可能是 L2）
-        for (const c of rows.filter((r) => !r.parent_id)) rootOpen[c.id] = true
+        // 默认展开全部节点，避免深层章节被折叠后“看不见”
+        for (const c of rows) rootOpen[c.id] = true
       }
       setOpen(rootOpen)
-      const first = t[0] ? map[t[0].id]?.[0] : null
-      if (first) await selectChapter(first.id)
+      const first = focus || (t[0] ? map[t[0].id]?.[0]?.id : null)
+      if (first) await selectChapter(first)
       else { setDetail(null); setCur(null); setSummaries([]); setPlans([]) }
     } catch (e) { toast('加载失败：' + (e as Error).message) }
   }
@@ -86,14 +94,19 @@ export default function BookPage({ go, courseId }: Props) {
       const finish = (err?: string) => {
         es.close()
         poll && clearInterval(poll)
-        setGen(null)
+        // 仅清理当前任务；用户切换章节并启动新任务时不要误关新骨架屏
+        setGen((g) => (g && g.id === t.id ? null : g))
         if (err) {
           toast('生成失败：' + err)
         } else if (detail) {
           const chId = detail.id
           const listPath = `/api/v1/chapters/${chId}/${kind === 'summary' ? 'summaries' : 'lesson-plans'}`
           api.get<{ id: string; content: string; version: number }[]>(listPath)
-            .then((rows) => kind === 'summary' ? setSummaries(rows) : setPlans(rows))
+            .then((rows) => {
+              if (curRef.current !== chId) return
+              if (kind === 'summary') setSummaries(rows)
+              else setPlans(rows)
+            })
             .catch(() => {})
         }
       }
@@ -120,7 +133,22 @@ export default function BookPage({ go, courseId }: Props) {
     } catch (e) { toast('生成失败：' + (e as Error).message) }
   }
 
-  useEffect(() => { if (courseId) loadBooks() }, [courseId])
+  // 单一加载入口：课程变化时加载默认首章；全局搜索带来 focusChapter 时直接定位。
+  // 用 ref 记录已消费的定位，避免 onFocusHandled 清空 prop 后重复加载/跳回首章。
+  useEffect(() => {
+    if (!courseId) return
+    if (!focusChapter) {
+      if (focusHandledRef.current) { focusHandledRef.current = null; return }
+      void loadBooks(null)
+      return
+    }
+    if (focusHandledRef.current === focusChapter) return
+    focusHandledRef.current = focusChapter
+    void loadBooks(focusChapter)
+      .catch((e) => toast('定位章节失败：' + (e as Error).message))
+      .finally(() => onFocusHandled?.())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusChapter, courseId])
 
   async function importFiles() {
     const w = window as any
@@ -128,10 +156,15 @@ export default function BookPage({ go, courseId }: Props) {
     if (w.electron?.openFileDialog) {
       const paths: string[] = await w.electron.openFileDialog()
       if (!paths || paths.length === 0) return
+      // PDF 可能加密：仅在选择 PDF 时询问一次打开口令
+      const hasPdf = paths.some((p) => p.toLowerCase().endsWith('.pdf'))
+      const passphrase = hasPdf
+        ? (window.prompt('若 PDF 已加密，请输入打开口令；未加密直接留空', '') || undefined)
+        : undefined
       let ok = 0
       for (const p of paths) {
         try {
-          await api.post('/api/v1/textbooks/import', { course_id: courseId, file_path: p })
+          await api.post('/api/v1/textbooks/import', { course_id: courseId, file_path: p, passphrase })
           ok++
         } catch (e) { toast(`导入失败：${(e as Error).message}`) }
       }
@@ -148,10 +181,15 @@ export default function BookPage({ go, courseId }: Props) {
   async function onWebFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files
     if (!files || files.length === 0) return
+    const hasPdf = Array.from(files).some((f) => f.name.toLowerCase().endsWith('.pdf'))
+    const passphrase = hasPdf
+      ? (window.prompt('若 PDF 已加密，请输入打开口令；未加密直接留空', '') || '')
+      : ''
     let ok = 0
     for (const f of Array.from(files)) {
       const fd = new FormData()
       fd.append('course_id', courseId)
+      if (passphrase) fd.append('passphrase', passphrase)
       fd.append('file', f)
       try {
         await api.post('/api/v1/textbooks/upload', fd)
@@ -182,7 +220,7 @@ export default function BookPage({ go, courseId }: Props) {
         <button className="btn btn-sm" onClick={importFiles}>📥 导入教材</button>
         <input id="import-file-book" type="file" accept=".pdf,.docx,.md,.txt,.epub" multiple
           style={{ display: 'none' }} onChange={onWebFiles} />
-        <button className="btn btn-sm" onClick={loadBooks} aria-label="刷新教材列表">⟳</button>
+        <button className="btn btn-sm" onClick={() => loadBooks()} aria-label="刷新教材列表">⟳</button>
         <button className="btn btn-sm" onClick={() => cur && api.post(`/api/v1/chapters/${cur}/revector`).then(() => toast('重新索引任务已提交')).catch((e) => toast(e.message))}>
           ⟳ 重新向量化
         </button>
@@ -196,7 +234,6 @@ export default function BookPage({ go, courseId }: Props) {
           {books.map((b) => {
             const rows = chaptersByBook[b.id] || []
             const roots = rows.filter((c) => !c.parent_id)
-            const childrenOf = (pid: string) => rows.filter((c) => c.parent_id === pid)
             return (
               <div key={b.id} style={{ borderTop: '1px solid var(--border)' }}>
                 <div className="book-head">
@@ -213,27 +250,9 @@ export default function BookPage({ go, courseId }: Props) {
                 {expanded[b.id] && (
                   <div className="tree card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
                     {roots.map((r) => (
-                      <div key={r.id}>
-                        <div className={`tree-item ${cur === r.id ? 'active' : ''}`}
-                          onClick={() => selectChapter(r.id)}>
-                          <span className={`arrow ${open[r.id] ? 'open' : ''}`}
-                            onClick={(e) => { e.stopPropagation(); setOpen((o) => ({ ...o, [r.id]: !o[r.id] })) }}>▸</span>
-                          <span>{r.title}</span>
-                          <span className="meta">{r.page_start ? `p.${r.page_start}` : ''}</span>
-                        </div>
-                        {open[r.id] && (
-                          <div className="tree-children">
-                            {childrenOf(r.id).map((c) => (
-                              <div key={c.id} className={`tree-item ${cur === c.id ? 'active' : ''}`}
-                                onClick={() => selectChapter(c.id)}>
-                                <span style={{ width: 14 }} />
-                                <span>{c.title}</span>
-                                <span className="meta">{c.page_start ? `p.${c.page_start}` : ''}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      <ChapterNode key={r.id} node={r} rows={rows} cur={cur}
+                        open={open} onToggle={(id) => setOpen((o) => ({ ...o, [id]: !o[id] }))}
+                        onSelect={selectChapter} />
                     ))}
                     {rows.length === 0 && (
                       <div style={{ color: 'var(--faint)', fontSize: 12.5, padding: '4px 0' }}>
@@ -356,6 +375,40 @@ export default function BookPage({ go, courseId }: Props) {
         </div>
       )}
     </>
+  )
+}
+
+/** 递归章节树：支持任意层级（多级标题 / EPUB 嵌套章节）。 */
+function ChapterNode({ node, rows, cur, open, onToggle, onSelect }: {
+  node: Chapter
+  rows: Chapter[]
+  cur: string | null
+  open: Record<string, boolean>
+  onToggle: (id: string) => void
+  onSelect: (id: string) => void
+}) {
+  const children = rows.filter((c) => c.parent_id === node.id)
+  return (
+    <div>
+      <div className={`tree-item ${cur === node.id ? 'active' : ''}`}
+        onClick={() => onSelect(node.id)}>
+        <span className={`arrow ${open[node.id] ? 'open' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (children.length) onToggle(node.id)
+          }}>{children.length ? '▸' : ''}</span>
+        <span>{node.title}</span>
+        <span className="meta">{node.page_start ? `p.${node.page_start}` : ''}</span>
+      </div>
+      {children.length > 0 && open[node.id] && (
+        <div className="tree-children">
+          {children.map((c) => (
+            <ChapterNode key={c.id} node={c} rows={rows} cur={cur}
+              open={open} onToggle={onToggle} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

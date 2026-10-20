@@ -38,8 +38,39 @@ try:
 except Exception as e:
     logger.info(f"sqlite-vec 不可用：{e}（向量检索降级为仅 FTS5）")
 
-# 嵌入向量维度（默认 bge-m3 的 1024 维；更换模型后可调整并重建索引）
-EMBEDDING_DIM = 1024
+# 嵌入向量维度（默认 bge-m3 的 1024 维；可在设置中调整并重建索引）
+DEFAULT_EMBEDDING_DIM = 1024
+EMBEDDING_DIM = DEFAULT_EMBEDDING_DIM  # 兼容旧引用
+
+
+def get_embedding_dim() -> int:
+    """运行时读取设置中的向量维度；未配置时回退默认值。"""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT value FROM settings WHERE key = 'embedding_dim'"
+            )).first()
+            raw = str(row[0]).strip().strip('"') if row else ""
+            if raw.isdigit():
+                dim = int(raw)
+                if 1 <= dim <= 16384:
+                    return dim
+    except Exception:
+        pass
+    return DEFAULT_EMBEDDING_DIM
+
+
+def recreate_vec_table(dim: int) -> None:
+    """按新维度重建 vec_chunks（旧向量随 DROP 一起清除，需重新向量化）。"""
+    if not VEC_AVAILABLE:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS vec_chunks"))
+        conn.execute(text(
+            f"CREATE VIRTUAL TABLE vec_chunks "
+            f"USING vec0(chunk_id INTEGER PRIMARY KEY, "
+            f"embedding float[{dim}] distance_metric=cosine)"
+        ))
 
 
 @event.listens_for(engine, "connect")
@@ -62,6 +93,7 @@ def init_db() -> None:
     from app.models import Base as _Base  # noqa: F401  注册全部表
 
     Base.metadata.create_all(bind=engine)
+    dim = get_embedding_dim()
     with engine.begin() as conn:
         # FTS5 全文索引（unicode61 分词；CJK 文本在索引时逐字插空格，
         # 使任意长度的中文子串都能通过短语匹配命中）
@@ -73,5 +105,5 @@ def init_db() -> None:
             conn.execute(text(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks "
                 f"USING vec0(chunk_id INTEGER PRIMARY KEY, "
-                f"embedding float[{EMBEDDING_DIM}] distance_metric=cosine)"
+                f"embedding float[{dim}] distance_metric=cosine)"
             ))

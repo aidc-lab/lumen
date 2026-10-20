@@ -54,7 +54,9 @@ export interface SearchResult {
   chunk_id: number
   chapter_id: string
   chapter_title: string
+  textbook_id: string | null
   textbook_title: string
+  course_id: string | null
   page_no: number | null
   para_no: number
   snippet: string

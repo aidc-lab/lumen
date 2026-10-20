@@ -130,6 +130,7 @@ def test_full_workflow(api):
         "title": "测试教材",
     })
     check("提交教材导入", st == 202 and task.get("id"))
+    import_task_id = task["id"]
     task = _wait_task(api, task["id"])
     check("教材导入完成", task["status"] == "completed", task.get("error", ""))
     textbook_id = task["result_ref"]
@@ -150,10 +151,16 @@ def test_full_workflow(api):
     check("检索结果带来源", hits and hits[0]["chapter_title"] and hits[0]["textbook_title"])
     st, hits2 = api("GET", "/search?" + urllib.parse.urlencode({"q": "什么是极限"}))
     check("自然语言问句检索（召回优先）", st == 200 and len(hits2) >= 1)
+    st, scoped = api("GET", "/search?" + urllib.parse.urlencode(
+        {"q": "ε-δ 定义", "course_id": course_id}))
+    check("按课程过滤检索", st == 200 and scoped and
+          all(h.get("course_id") == course_id for h in scoped))
+    check("检索结果含课程/教材 id", scoped and scoped[0].get("textbook_id"))
 
     # 7. 章节总结
     st, task = api("POST", "/summaries/generate",
                    {"chapter_id": chapters[2]["id"], "model_id": model_id})
+    summary_task_id = task["id"]
     task = _wait_task(api, task["id"])
     check("章节总结任务完成", task["status"] == "completed", task.get("error", ""))
     st, sums = api("GET", f"/chapters/{chapters[2]['id']}/summaries")
@@ -188,6 +195,26 @@ def test_full_workflow(api):
           f"score={result.get('score')}/{result.get('total_score')}")
     st, report = api("GET", f"/attempts/{attempt['id']}/report")
     check("成绩单含逐题判分", st == 200 and all(i["is_correct"] for i in report["items"]))
+    check("成绩单返回满分口径", st == 200 and report.get("total_score") == result["total_score"])
+
+    # 重复提交必须幂等：不能重复插入 Answer 或重复计分
+    st, result_again = api("POST", f"/attempts/{attempt['id']}/submit", answers)
+    st, report_again = api("GET", f"/attempts/{attempt['id']}/report")
+    check("重复提交分数不变", st == 200 and result_again["score"] == result["score"],
+          f"{result['score']} -> {result_again.get('score')}")
+    check("重复提交不重复生成答卷", len(report_again["items"]) == len(report["items"]),
+          f"{len(report['items'])} -> {len(report_again['items'])}")
+
+    # 作答自动保存（刷新/重进后可恢复）
+    st, draft_attempt = api("POST", f"/papers/{paper['id']}/attempts")
+    check("创建自动保存用作答", st == 201 and draft_attempt.get("id"))
+    partial = {exercises[0]["id"]: exercises[0]["answer"]}
+    st, _ = api("PATCH", f"/attempts/{draft_attempt['id']}/answers", partial)
+    check("自动保存作答", st == 200)
+    st, saved = api("GET", f"/attempts/{draft_attempt['id']}/answers")
+    check("读取已保存作答", st == 200 and
+          saved["answers"].get(exercises[0]["id"]) == exercises[0]["answer"],
+          json.dumps(saved, ensure_ascii=False))
 
     st, attempt2 = api("POST", f"/papers/{paper['id']}/attempts")
     st, result2 = api("POST", f"/attempts/{attempt2['id']}/submit",
@@ -275,6 +302,23 @@ def test_full_workflow(api):
     check("手动重评接口", st == 200 and regraded.get("score") == 5,
           json.dumps(regraded, ensure_ascii=False))
 
+    # 11.1 混合卷总分口径：客观题 + 主观题不能重复计分
+    st, paper_mix = api("POST", "/papers", {
+        "course_id": course_id, "title": "E2E 混合卷",
+        "exercise_ids": [exercises[0]["id"], short_q["id"]], "duration_min": 10,
+    })
+    check("混合卷组卷", st == 201 and paper_mix["count"] == 2)
+    st, attempt_mix = api("POST", f"/papers/{paper_mix['id']}/attempts")
+    st, sub_mix = api("POST", f"/attempts/{attempt_mix['id']}/submit", {
+        exercises[0]["id"]: exercises[0]["answer"],
+        short_q["id"]: "极限就是无限接近的意思。",
+    })
+    gtask_mix = _wait_task(api, sub_mix["grading_task_id"])
+    check("混合卷阅卷完成", gtask_mix["status"] == "completed", gtask_mix.get("error", ""))
+    st, report_mix = api("GET", f"/attempts/{attempt_mix['id']}/report")
+    check("混合卷总分=客观10+主观5", st == 200 and report_mix["score"] == 15,
+          f"score={report_mix.get('score')}")
+
     # 12. 教案生成（P2）
     st, task = api("POST", "/lesson-plans/generate",
                    {"chapter_id": chapters[2]["id"], "model_id": model_id})
@@ -336,10 +380,71 @@ def test_full_workflow(api):
     st, _ = api("DELETE", f"/papers/{paper['id']}")
     check("重复删除返回 404", st == 404, f"status={st}")
     st, attempts_after = api("GET", f"/attempts?course_id={course_id}")
-    check("试卷的作答记录一并删除", st == 200 and len(attempts_after) == 1,
-          f"attempts={len(attempts_after)}")
+    check("试卷的作答记录一并删除", st == 200 and all(
+        a["paper_id"] != paper["id"] for a in attempts_after),
+        f"attempts={len(attempts_after)}")
     st, pub = api("GET", f"/exercises?course_id={course_id}&status=published")
     check("题库题目保留", st == 200 and len(pub) >= 3, f"got {len(pub)}")
+
+    # 18. 历史任务重试（按 task_type + params 重建）
+    st, retried = api("POST", f"/tasks/{summary_task_id}/retry")
+    check("重试任务返回 202", st == 202 and retried.get("id"), json.dumps(retried, ensure_ascii=False))
+    retried = _wait_task(api, retried["id"])
+    check("重试任务完成", retried["status"] == "completed", retried.get("error", ""))
+
+    # 19. 提示词模板（读取内置默认 → 保存自定义 → 读回）
+    st, prompt = api("GET", "/prompt-templates/summary")
+    check("读取内置提示词", st == 200 and prompt.get("builtin") is True and prompt.get("content"))
+    st, saved_prompt = api("PUT", "/prompt-templates/summary", {
+        "content": "你是测试用总结助手。请输出知识框架。", "name": "E2E 总结",
+    })
+    check("保存提示词模板", st == 200 and saved_prompt.get("version") == 1,
+          json.dumps(saved_prompt, ensure_ascii=False))
+    st, prompt2 = api("GET", "/prompt-templates/summary")
+    check("读回自定义提示词", st == 200 and prompt2.get("builtin") is False
+          and "测试用总结助手" in prompt2.get("content", ""))
+
+    # 20. 用量概览
+    st, usage = api("GET", "/usage/summary")
+    check("用量概览", st == 200 and usage.get("tasks", 0) >= 1
+          and usage.get("tokens_in", 0) > 0, json.dumps(usage, ensure_ascii=False))
+
+    # 20.5 重试教材导入：应先清理旧章节/索引再解析，不能重复生成章节
+    st, reimport = api("POST", f"/tasks/{import_task_id}/retry")
+    check("重试教材导入返回 202", st == 202 and reimport.get("id"))
+    reimport = _wait_task(api, reimport["id"])
+    check("重试教材导入完成", reimport["status"] == "completed", reimport.get("error", ""))
+    st, chapters_again = api("GET", f"/textbooks/{textbook_id}/chapters")
+    check("重试导入不重复生成章节", st == 200 and len(chapters_again) == 5,
+          f"got {len(chapters_again) if isinstance(chapters_again, list) else chapters_again}")
+
+    # 20.6 删除题库题目：应从引用试卷移除，并重算满分/成绩单总分
+    st, _ = api("DELETE", f"/exercises/{short_q['id']}")
+    check("删除题库题目", st == 204, f"status={st}")
+    st, mix_after = api("GET", f"/papers/{paper_mix['id']}")
+    check("删除题目后试卷满分重算", st == 200 and mix_after["total_score"] == 10,
+          f"total={mix_after.get('total_score')}")
+    st, mix_report = api("GET", f"/attempts/{attempt_mix['id']}/report")
+    check("删除题目后成绩单总分重算", st == 200 and mix_report["score"] == 10
+          and len(mix_report["items"]) == 1, f"score={mix_report.get('score')}")
+
+    # 20.7 嵌入维度变更：重建向量表（旧向量清空）且全文检索仍可用
+    st, dim_res = api("PUT", "/settings", {"embedding_dim": "768"})
+    check("更新嵌入维度", st == 200 and dim_res.get("reindex_required") is True,
+          json.dumps(dim_res, ensure_ascii=False))
+    st, stg = api("GET", "/settings")
+    check("嵌入维度已保存", st == 200 and stg["settings"].get("embedding_dim") == "768")
+    st, dim_hits = api("GET", "/search?" + urllib.parse.urlencode(
+        {"q": "ε-δ 定义", "course_id": course_id}))
+    check("维度变更后全文检索仍可用", st == 200 and len(dim_hits) >= 1)
+
+    # 21. 删除课程应清理 FTS/向量索引（不能留下可检索的孤儿内容）
+    st, _ = api("DELETE", f"/courses/{course_id}")
+    check("删除课程", st == 204)
+    st, orphan_hits = api("GET", "/search?" + urllib.parse.urlencode(
+        {"q": "ε-δ 定义", "course_id": course_id}))
+    check("删除课程后无残留检索结果", st == 200 and len(orphan_hits) == 0,
+          f"hits={len(orphan_hits)}")
 
 
 if __name__ == "__main__":

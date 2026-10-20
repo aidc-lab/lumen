@@ -51,6 +51,15 @@ export const api = {
   del: <T>(path: string) => request<T>('DELETE', path),
 }
 
+/** 生成带令牌的直链（用于 PDF 下载 / window.open）。 */
+export async function fileUrl(path: string): Promise<string> {
+  const { port, token } = await getSidecarInfo()
+  const isDev = !!import.meta.env.DEV
+  const base = isDev ? '' : `http://127.0.0.1:${port}`
+  const sep = path.includes('?') ? '&' : '?'
+  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`
+}
+
 /** POST 版 SSE：EventSource 只支持 GET，答疑等用 POST 返回流的接口需要 fetch 读流。
  *  解析 `event: xxx` / `data: yyy` 分块后回调 onEvent。 */
 export async function openPostSSE(

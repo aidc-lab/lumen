@@ -10,6 +10,8 @@ interface Props {
   courseId: string
   sub: SubView
   go: (v: NavTarget) => void
+  focusChapter?: string | null
+  onFocusHandled?: () => void
 }
 
 const TABS: { key: SubView; ico: string; label: string }[] = [
@@ -21,7 +23,7 @@ const TABS: { key: SubView; ico: string; label: string }[] = [
   { key: 'qa', ico: '💬', label: '答疑' },
 ]
 
-export default function CourseWorkspace({ courseId, sub, go }: Props) {
+export default function CourseWorkspace({ courseId, sub, go, focusChapter, onFocusHandled }: Props) {
   if (!courseId) {
     return (
       <div className="card empty">
@@ -33,7 +35,8 @@ export default function CourseWorkspace({ courseId, sub, go }: Props) {
 
   const render = () => {
     switch (sub) {
-      case 'book': return <BookPage go={go} courseId={courseId} />
+      case 'book': return <BookPage go={go} courseId={courseId}
+        focusChapter={focusChapter} onFocusHandled={onFocusHandled} />
       case 'bank': return <BankPage go={go} courseId={courseId} />
       case 'paper': return <PaperPage go={go} courseId={courseId} />
       case 'report': return <ReportPage go={go} courseId={courseId} />

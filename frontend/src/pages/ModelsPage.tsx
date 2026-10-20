@@ -9,6 +9,8 @@ export default function ModelsPage({ go }: Props) {
   const toast = useContext(ToastContext)
   const [models, setModels] = useState<ModelDef[]>([])
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     name: '', provider: 'OpenAI 兼容', base_url: '', api_key: '',
     capabilities: ['text'], context_length: 8192, max_output: 4096,
@@ -38,15 +40,57 @@ export default function ModelsPage({ go }: Props) {
     }
   }
 
-  async function createModel() {
+  function resetForm() {
+    setEditingId(null)
+    setForm({ name: '', provider: 'OpenAI 兼容', base_url: '', api_key: '', capabilities: ['text'], context_length: 8192, max_output: 4096 })
+  }
+
+  function openCreate() {
+    resetForm()
+    setShowForm(true)
+  }
+
+  function openEdit(m: ModelDef) {
+    setEditingId(m.id)
+    setForm({
+      name: m.name,
+      provider: m.provider,
+      base_url: m.base_url,
+      api_key: '',
+      capabilities: m.capabilities.length ? [...m.capabilities] : ['text'],
+      context_length: m.context_length,
+      max_output: m.max_output || 4096,
+    })
+    setShowForm(true)
+  }
+
+  async function saveModel() {
     if (!form.name || !form.base_url) return toast('请填写名称与 Base URL')
+    setSaving(true)
     try {
-      await api.post('/api/v1/models', form)
+      const payload: Record<string, unknown> = {
+        name: form.name,
+        provider: form.provider,
+        base_url: form.base_url,
+        capabilities: form.capabilities,
+        context_length: form.context_length,
+        max_output: form.max_output,
+      }
+      // 编辑时留空表示保留原 Key，避免误清空
+      if (form.api_key.trim()) payload.api_key = form.api_key.trim()
+      if (editingId) {
+        await api.patch(`/api/v1/models/${editingId}`, payload)
+        toast('模型已更新')
+      } else {
+        await api.post('/api/v1/models', payload)
+        toast('模型已添加')
+      }
       setShowForm(false)
-      setForm({ name: '', provider: 'OpenAI 兼容', base_url: '', api_key: '', capabilities: ['text'], context_length: 8192, max_output: 4096 })
+      resetForm()
       refresh()
-      toast('模型已添加')
-    } catch (e) { toast('添加失败：' + (e as Error).message) }
+    } catch (e) {
+      toast((editingId ? '更新失败：' : '添加失败：') + (e as Error).message)
+    } finally { setSaving(false) }
   }
 
   return (
@@ -56,11 +100,12 @@ export default function ModelsPage({ go }: Props) {
         <span className="sub">统一经 OpenAI 兼容网关接入 · Key 本地加密（AES-256-GCM + 系统钥匙串）</span>
         <div className="spacer" />
         <button className="btn btn-ghost" onClick={() => go('settings')}>⚙️ 默认模型设置</button>
-        <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>＋ 新建模型</button>
+        <button className="btn btn-primary" onClick={() => (showForm && !editingId ? setShowForm(false) : openCreate())}>＋ 新建模型</button>
       </div>
       {error && <div className="error-box">{error}</div>}
       {showForm && (
         <div className="card card-pad" style={{ marginBottom: 14 }}>
+          <div style={{ fontWeight: 600, marginBottom: 12 }}>{editingId ? '✏️ 编辑模型' : '＋ 新建模型'}</div>
           <div className="field-row">
             <div className="field"><label>名称</label>
               <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="DeepSeek-V3" /></div>
@@ -71,7 +116,9 @@ export default function ModelsPage({ go }: Props) {
             <input value={form.base_url} onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
               placeholder="https://api.deepseek.com/v1 或 http://127.0.0.1:11434/v1" style={{ width: '100%' }} /></div>
           <div className="field"><label>API Key（本地加密存储；本地模型可留空）</label>
-            <input type="password" value={form.api_key} onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))} style={{ width: '100%' }} /></div>
+            <input type="password" value={form.api_key}
+              placeholder={editingId ? '留空保留原 Key' : ''}
+              onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))} style={{ width: '100%' }} /></div>
           <div className="field-row">
             <div className="field"><label>能力</label>
               {['text', 'vision', 'long_context', 'embedding'].map((c) => (
@@ -89,10 +136,15 @@ export default function ModelsPage({ go }: Props) {
             <div className="field"><label>上下文长度</label>
               <input type="number" value={form.context_length}
                 onChange={(e) => setForm((f) => ({ ...f, context_length: +e.target.value }))} /></div>
+            <div className="field"><label>最大输出</label>
+              <input type="number" value={form.max_output}
+                onChange={(e) => setForm((f) => ({ ...f, max_output: +e.target.value }))} /></div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
-            <button className="btn btn-primary" onClick={createModel}>保存</button>
-            <button className="btn btn-ghost" onClick={() => setShowForm(false)}>取消</button>
+            <button className="btn btn-primary" disabled={saving} onClick={saveModel}>
+              {saving ? '保存中…' : (editingId ? '保存修改' : '保存')}
+            </button>
+            <button className="btn btn-ghost" onClick={() => { setShowForm(false); resetForm() }}>取消</button>
           </div>
         </div>
       )}
@@ -112,14 +164,14 @@ export default function ModelsPage({ go }: Props) {
               <button className="btn btn-sm" disabled={testing[m.id]} onClick={() => testModel(m.id)}>
                 {testing[m.id] ? '测试中…' : '🔌 测试连通'}
               </button>
-              <button className="btn btn-sm" onClick={async () => {
-                // 编辑为 P1 完整表单，这里仅演示改名
-                toast('编辑表单为 P1 能力')
-              }}>编辑</button>
+              <button className="btn btn-sm" onClick={() => openEdit(m)}>编辑</button>
               <button className="btn btn-sm btn-ghost btn-danger" onClick={async () => {
-                await api.del(`/api/v1/models/${m.id}`)
-                refresh()
-                toast('已删除')
+                if (!window.confirm(`确认删除模型「${m.name}」？已产生的历史任务/成绩仍会保留。`)) return
+                try {
+                  await api.del(`/api/v1/models/${m.id}`)
+                  refresh()
+                  toast('已删除')
+                } catch (e) { toast('删除失败：' + (e as Error).message) }
               }}>删除</button>
               <span className="def">
                 {m.status === 'ok' ? <span className="tag ok">连通正常</span>

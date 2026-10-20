@@ -6,6 +6,13 @@ import { getSettings, putSettings } from '../settingsStore'
 const TASKS = ['答疑', '总结', '出题', '阅卷', '教案', '向量化']
 const CAP = (t: string) => (t === '向量化' ? 'embedding' : 'text')
 const ICO: Record<string, string> = { 答疑: '💬', 总结: '📝', 出题: '✏️', 阅卷: '📊', 教案: '📚', 向量化: '🧲' }
+const PROMPT_TASKS: { key: string; label: string }[] = [
+  { key: 'qa', label: '答疑' },
+  { key: 'summary', label: '章节总结' },
+  { key: 'exercise', label: '出题' },
+  { key: 'grade', label: '主观题阅卷' },
+  { key: 'lesson', label: '教案生成' },
+]
 
 type M = { id: string; name: string; capabilities: string[]; default_for?: Record<string, boolean> | null }
 
@@ -14,6 +21,11 @@ export default function SettingsPage() {
   const [models, setModels] = useState<M[]>([])
   const [defaults, setDefaults] = useState<Record<string, string>>({})
   const [dim, setDim] = useState('1024')
+  const [promptTask, setPromptTask] = useState('summary')
+  const [promptContent, setPromptContent] = useState('')
+  const [promptVersion, setPromptVersion] = useState(0)
+  const [promptBuiltin, setPromptBuiltin] = useState(true)
+  const [promptSaving, setPromptSaving] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -55,10 +67,39 @@ export default function SettingsPage() {
   }
 
   async function saveDim() {
+    const n = parseInt(dim, 10)
+    if (!Number.isFinite(n) || n < 1 || n > 16384) return toast('维度需为 1–16384 的整数')
     const s = await getSettings()
-    s['embedding_dim'] = dim
+    s['embedding_dim'] = String(n)
     await putSettings(s)
-    toast('嵌入维度已保存（更改后需重建向量索引）')
+    toast('嵌入维度已保存；如维度发生变化，旧向量已清空，需重新向量化章节')
+  }
+
+  async function loadPrompt(task: string) {
+    try {
+      const r = await api.get<{
+        task_type: string; content: string; version: number; builtin: boolean
+      }>(`/api/v1/prompt-templates/${task}`)
+      setPromptContent(r.content || '')
+      setPromptVersion(r.version || 0)
+      setPromptBuiltin(!!r.builtin)
+    } catch (e) { toast('加载提示词失败：' + (e as Error).message) }
+  }
+
+  useEffect(() => { void loadPrompt(promptTask) }, [promptTask])
+
+  async function savePrompt() {
+    if (!promptContent.trim()) return toast('提示词内容不能为空')
+    setPromptSaving(true)
+    try {
+      const label = PROMPT_TASKS.find((x) => x.key === promptTask)?.label ?? promptTask
+      await api.put(`/api/v1/prompt-templates/${promptTask}`, {
+        content: promptContent, name: label,
+      })
+      toast('提示词已保存，新任务立即生效')
+      await loadPrompt(promptTask)
+    } catch (e) { toast('保存失败：' + (e as Error).message) }
+    finally { setPromptSaving(false) }
   }
 
   return (
@@ -127,6 +168,35 @@ export default function SettingsPage() {
           <div className="sc-foot">
             <span className="dim-hint">更改维度后需重建向量索引</span>
             <button className="btn btn-sm btn-primary" onClick={saveDim}>保存维度</button>
+          </div>
+        </div>
+        <div className="card card-pad sc-card">
+          <div className="sc-head">
+            <span className="sc-ico">🧩</span>
+            <div>
+              <div className="sc-t">提示词模板</div>
+              <div className="sc-d">自定义各任务的系统提示词；保存后按版本生效</div>
+            </div>
+          </div>
+          <div className="set-row">
+            <div className="lbl"><div className="t">任务</div></div>
+            <select className="td-select" value={promptTask}
+              onChange={(e) => setPromptTask(e.target.value)}>
+              {PROMPT_TASKS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
+            <span className={`tag ${promptBuiltin ? '' : 'accent'}`}>
+              {promptBuiltin ? '内置默认' : `自定义 v${promptVersion}`}
+            </span>
+          </div>
+          <textarea rows={8} value={promptContent}
+            onChange={(e) => setPromptContent(e.target.value)}
+            style={{ width: '100%', fontFamily: 'inherit', lineHeight: 1.6 }}
+            placeholder="输入该任务的系统提示词；保存后新任务立即使用" />
+          <div className="sc-foot">
+            <span className="dim-hint">提示词仅保存在本机</span>
+            <button className="btn btn-sm btn-primary" disabled={promptSaving} onClick={savePrompt}>
+              {promptSaving ? '保存中…' : '保存提示词'}
+            </button>
           </div>
         </div>
         <div className="card card-pad sc-card">

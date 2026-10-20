@@ -13,6 +13,7 @@ import ModelsPage from './pages/ModelsPage'
 import TasksPage from './pages/TasksPage'
 import SettingsPage from './pages/SettingsPage'
 import WrongPage from './pages/WrongPage'
+import SearchModal from './components/SearchModal'
 import { api } from './api'
 import type { Course } from './types'
 
@@ -34,10 +35,14 @@ export interface CourseCtx {
   course: Course | null
   setCourseId: (id: string | null) => void
   refreshCourses: () => Promise<void>
+  /** 全局搜索定位章节：由 BookPage 消费后清空 */
+  focusChapter: string | null
+  setFocusChapter: (id: string | null) => void
 }
 
 export const CourseContext = createContext<CourseCtx>({
   courses: [], course: null, setCourseId: () => {}, refreshCourses: async () => {},
+  focusChapter: null, setFocusChapter: () => {},
 })
 
 interface ToastMsg {
@@ -58,11 +63,27 @@ export default function App() {
   const [activeCourseId, setActiveCourseId] = useState<string | null>(
     () => localStorage.getItem('lumen-course') || null
   )
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [focusChapter, setFocusChapter] = useState<string | null>(null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('lumen-theme', theme)
   }, [theme])
+
+  // 全局搜索快捷键 ⌘K / Ctrl+K
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setSearchOpen((v) => !v)
+      } else if (e.key === 'Escape') {
+        setSearchOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const refreshCourses = useCallback(async () => {
     try {
@@ -111,6 +132,8 @@ export default function App() {
         courseId={course?.id ?? ''}
         sub={subView}
         go={navigate}
+        focusChapter={focusChapter}
+        onFocusHandled={() => setFocusChapter(null)}
       />
     ),
     tasks: <TasksPage />,
@@ -120,14 +143,17 @@ export default function App() {
 
   return (
     <ToastContext.Provider value={toast}>
-      <CourseContext.Provider value={{ courses, course, setCourseId, refreshCourses }}>
-        <TopBar theme={theme} onToggleTheme={toggleTheme} />
+      <CourseContext.Provider value={{
+        courses, course, setCourseId, refreshCourses, focusChapter, setFocusChapter,
+      }}>
+        <TopBar theme={theme} onToggleTheme={toggleTheme} onSearch={() => setSearchOpen(true)} />
         <div className="app">
           <Rail view={view} onNavigate={navigate} />
           <main className="main" key={view}>
             {pages[view]}
           </main>
         </div>
+        <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} go={navigate} />
         <div className="toast-stack">
           {toasts.map((t) => (
             <div key={t.id} className="toast-item">{t.text}</div>

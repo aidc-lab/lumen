@@ -153,6 +153,7 @@ async def generate_exercises(job, params: dict) -> list[str]:
     types = params.get("types") or {"single": 3, "judge": 2, "short": 2}
     difficulty = params.get("difficulty", 3)
     explain = params.get("explain", True)
+    include_answer = params.get("answer", True)
     model_id = params.get("model_id")
 
     with SessionLocal() as db:
@@ -193,7 +194,7 @@ async def generate_exercises(job, params: dict) -> list[str]:
                     course_id=course_id, chapter_id=chapter.id,
                     type=q["type"], difficulty=q.get("difficulty") or difficulty,
                     stem=q["stem"], options=q.get("options"),
-                    answer=q.get("answer", "") if explain or True else "",
+                    answer=q.get("answer", "") if include_answer else "",
                     explanation=q.get("explanation", "") if explain else "",
                     source_refs=q.get("source_refs") or [{"chapter": chapter.title,
                                                           "page": chapter.page_start, "para": None}],
@@ -266,15 +267,49 @@ async def answer_stream(session_id: str, question: str,
         if sess is None:
             raise ValueError(f"会话不存在: {session_id}")
         # 本次显式指定的章节范围优先；否则沿用会话持久化的 scope
-        ids = chapter_ids if chapter_ids is not None else ((sess.scope or {}).get("chapter_ids") or None)
+        scope_ids = chapter_ids if chapter_ids is not None else ((sess.scope or {}).get("chapter_ids") or None)
+        if isinstance(scope_ids, str):
+            scope_ids = [scope_ids]
+        scope_ids = scope_ids or None
         model = await resolve_model(db, model_id, "答疑")
         sess.mode = sess.mode or "direct"
 
-        # 1) 检索
-        hits = await hybrid_search(question, chapter_ids, k=5)
+        # 多轮上下文：取最近若干条历史（当前问题在下方才写入，避免重复）
+        recent = list(db.scalars(
+            select(Message).where(Message.session_id == session_id)
+            .order_by(Message.created_at.desc()).limit(8)))
+        recent.reverse()
+        history = [
+            {"role": m.role, "content": _truncate(m.content or "", 1200)}
+            for m in recent
+            if m.role in ("user", "assistant") and (m.content or "").strip()
+        ]
+
+        # 保存用户消息（附带本次 @ 引用，便于历史回看）
+        ref_labels: list[str] = []
+        for cid in (scope_ids or []):
+            ch = db.get(Chapter, cid)
+            if ch is None:
+                continue
+            tb = db.get(Textbook, ch.textbook_id)
+            ref_labels.append(f"《{tb.title if tb else ''}》{ch.title}")
+        user_msg = Message(id=uuid.uuid4().hex, session_id=session_id, role="user", content=question,
+                           citations={"refs": ref_labels} if ref_labels else None)
+        db.add(user_msg)
+        db.commit()
+
+        # 1) 检索：显式章节优先；否则按课程收敛（session.course_id），避免跨课程串库
+        hits = await hybrid_search(question, scope_ids, k=5,
+                                   course_id=None if scope_ids else sess.course_id)
         if not hits:
-            yield ("delta", "（未检索到相关教材内容，请先确认该章节已导入并建立索引。）")
-            yield ("done", {"citations": [], "tokens_in": 0, "tokens_out": 0, "model_id": model.id})
+            fallback = "（未检索到相关教材内容，请先确认该章节已导入并建立索引。）"
+            ai_msg = Message(id=uuid.uuid4().hex, session_id=session_id, role="assistant",
+                             content=fallback, citations={"list": []}, model_id=model.id)
+            db.add(ai_msg)
+            db.commit()
+            yield ("delta", fallback)
+            yield ("done", {"message_id": ai_msg.id, "citations": [],
+                            "tokens_in": 0, "tokens_out": 0, "model_id": model.id})
             return
 
         # 2) 上下文组装（带出处标签）
@@ -287,29 +322,16 @@ async def answer_stream(session_id: str, question: str,
             context_blocks.append(f"【片段 {i}｜{ref}】\n{h['snippet']}")
         context = "\n\n".join(context_blocks)
 
-        # 保存用户消息（附带本次 @ 引用，便于历史回看）
-        ref_labels: list[str] = []
-        for cid in (ids or []):
-            ch = db.get(Chapter, cid)
-            if ch is None:
-                continue
-            tb = db.get(Textbook, ch.textbook_id)
-            ref_labels.append(f"《{tb.title if tb else ''}》{ch.title}")
-        user_msg = Message(id=uuid.uuid4().hex, session_id=session_id, role="user", content=question,
-                           citations={"refs": ref_labels} if ref_labels else None)
-        db.add(user_msg)
-        db.commit()
-
         # 3) 生成（流式）
         system = await get_prompt(db, "qa")
         if sess.mode == "socratic":
             system += "\n当前模式：苏格拉底式引导——先给提示与思路，不直接给完整答案。"
         elif sess.mode == "review":
             system += "\n当前模式：批改学生思路——先指出思路中的问题，再给出正确方向。"
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": f"教材片段：\n{context}\n\n学生问题：{question}"},
-        ]
+        messages = [{"role": "system", "content": system}]
+        messages.extend(history)
+        messages.append({"role": "user",
+                         "content": f"教材片段：\n{context}\n\n学生问题：{question}"})
         gen = await llm.chat(model, messages, temperature=0.3, stream=True)
         full_text = ""
         citations: list[dict] = []
@@ -435,6 +457,8 @@ async def run_grading(job, attempt_id: str) -> str:
         subjective = [a for a in answers if a.is_correct is None]
         if not subjective:
             return attempt_id
+        # 客观题分数必须在批改前快照，否则批改后 is_correct 变化会导致主观题被重复计入
+        obj_total = sum(a.ai_score or 0 for a in answers if a.is_correct is not None)
         model = await resolve_model(db, None, "阅卷")
         job.model_id = model.id
         total = 0
@@ -464,9 +488,7 @@ async def run_grading(job, attempt_id: str) -> str:
             ans.is_correct = result["score"] >= result["max_score"] * 0.6
             ans.regraded_at = datetime.utcnow()
             total += result["score"]
-        # 总分 = 客观题 + 主观题
-        obj_total = sum(a.ai_score or 0 for a in answers
-                        if a.is_correct is not None)
+        # 总分 = 客观题 + 主观题（obj_total 已在批改前快照）
         attempt.score = obj_total + total
         attempt.status = "graded"
         db.commit()

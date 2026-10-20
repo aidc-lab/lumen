@@ -94,7 +94,9 @@ class SearchResult(BaseModel):
     chunk_id: int
     chapter_id: str
     chapter_title: str
+    textbook_id: str | None = None
     textbook_title: str
+    course_id: str | None = None
     page_no: int | None = None
     para_no: int
     snippet: str
@@ -211,7 +213,7 @@ class ExerciseOut(BaseModel):
 
 class ExerciseUpdate(BaseModel):
     stem: str | None = None
-    options: dict | None = None
+    options: list | None = None
     answer: str | None = None
     explanation: str | None = None
     difficulty: int | None = None
@@ -287,6 +289,12 @@ class AttemptOut(BaseModel):
     started_at: str
     finished_at: str | None = None
     question_count: int = 0
+
+
+# ---- 提示词模板 ----
+class PromptTemplateUpdate(BaseModel):
+    content: str
+    name: str = ""
 
 
 # ---- 设置 ----

@@ -32,30 +32,75 @@ export default function DoingPanel({ go, courseId, questions, attemptId, paper, 
   const [left, setLeft] = useState(paper.duration_min * 60)
   const [submitting, setSubmitting] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const hydrated = useRef(false)
+  const submittedRef = useRef(false)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const qsRef = useRef<QItem[]>(questions)
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 
+  // 恢复已自动保存的作答（刷新 / 切页后继续答题）
+  useEffect(() => {
+    let cancelled = false
+    hydrated.current = false
+    api.get<{ answers: Record<string, string> }>(`/api/v1/attempts/${attemptId}/answers`)
+      .then(({ answers }) => {
+        if (cancelled) return
+        setQs((items) => items.map((q) => {
+          const saved = answers[q.id]
+          if (saved == null) return q
+          const val = q.type === 'multi'
+            ? saved.split(',').map((x) => x.trim()).filter(Boolean)
+            : saved
+          return { ...q, user_answer: val }
+        }))
+      })
+      .catch(() => { /* 旧记录或接口不可用时忽略 */ })
+      .finally(() => { if (!cancelled) hydrated.current = true })
+    return () => { cancelled = true }
+  }, [attemptId])
+
+  // 始终保留最新作答，供倒计时自动提交使用（避免闭包拿到初始空答卷）
+  useEffect(() => { qsRef.current = qs }, [qs])
+
+  // 自动保存：停止输入 800ms 后落库，不判分、不打断作答
+  useEffect(() => {
+    if (!hydrated.current || submittedRef.current) return
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      const answers: Record<string, string> = {}
+      for (const q of qs) {
+        answers[q.id] = Array.isArray(q.user_answer) ? q.user_answer.join(',') : (q.user_answer ?? '')
+      }
+      api.patch(`/api/v1/attempts/${attemptId}/answers`, answers).catch(() => {})
+    }, 800)
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current) }
+  }, [qs, attemptId])
+
   useEffect(() => {
     if (paper.duration_min <= 0) return
-    timerRef.current = setInterval(() => {
-      setLeft((l) => {
-        if (l <= 1) { doSubmit() }
-        return l - 1
-      })
-    }, 1000)
+    timerRef.current = setInterval(() => setLeft((l) => Math.max(0, l - 1)), 1000)
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [])
+
+  // 倒计时到 0 自动交卷（放在 effect 中，避免在 state updater 里触发副作用）
+  useEffect(() => {
+    if (paper.duration_min > 0 && left === 0 && !result) doSubmit()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [left])
 
   function setAnswer(idx: number, val: string | string[]) {
     setQs((items) => items.map((q, i) => (i === idx ? { ...q, user_answer: val } : q)))
   }
 
   async function doSubmit() {
+    if (submittedRef.current) return
     if (timerRef.current) clearInterval(timerRef.current)
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    submittedRef.current = true
     setSubmitting(true)
-    const items = qs
     const answers: Record<string, string> = {}
-    for (const q of qs) {
+    for (const q of qsRef.current) {
       answers[q.id] = Array.isArray(q.user_answer) ? q.user_answer.join(',') : (q.user_answer ?? '')
     }
     try {
@@ -70,6 +115,7 @@ export default function DoingPanel({ go, courseId, questions, attemptId, paper, 
       }
       onFinish()
     } catch (e) {
+      submittedRef.current = false
       setSubmitting(false)
       toast('提交失败：' + (e as Error).message)
     }

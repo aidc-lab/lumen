@@ -1,25 +1,28 @@
 """REST 端点（/api/v1）。见设计文档 §8.1。"""
 import asyncio
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import delete, func, select, text, update
 
 from app.core.config import FILES_DIR
-from app.core.db import SessionLocal, VEC_AVAILABLE
-from app.core.security import encrypt
+from app.core.db import (DEFAULT_EMBEDDING_DIM, SessionLocal, VEC_AVAILABLE,
+                         recreate_vec_table)
+from app.core.security import decrypt, encrypt
 from app.models import (AITask, Answer, Attempt, Chapter, ChapterChunk, Course, Exercise,
                         LessonPlan, Message, Model, Paper, PaperQuestion, Session,
                         Setting, Summary, Textbook, WrongEntry, parse_setting)
 from app.schemas import (AttemptOut, ChatIn, ChapterUpdate, ChapterOut, ChapterDetail, ChunkOut,
                          CourseCreate, CourseOut, CourseUpdate, ExerciseGenerate,
                          ExerciseOut, ExerciseUpdate, ModelCreate, ModelOut,
-                         ModelTestResult, ModelUpdate, PaperCreate, PaperOut, SearchResult,
+                         ModelTestResult, ModelUpdate, PaperCreate, PaperOut,
+                         PromptTemplateUpdate, SearchResult,
                          SessionCreate, SessionOut, MessageOut, SummaryGenerate, SummaryOut,
                          TaskOut, TextbookImport, TextbookOut)
 from app.services import ai, indexing, parsing
@@ -35,6 +38,51 @@ def _uid() -> str:
 
 def _err(code: str, msg: str, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail={"error": {"code": code, "message": msg}})
+
+
+_CHOICE_PREFIX_RE = re.compile(r"^([A-Ha-h])\s*(?:[.．、:：)）]|\s|$)")
+
+
+def _choice_key(value: object) -> str:
+    """把选择题答案归一为选项键（A-H）；判断题归一为 √/×。"""
+    s = str(value or "").strip()
+    m = _CHOICE_PREFIX_RE.match(s)
+    if m:
+        return m.group(1).upper()
+    if any(x in s for x in ("√", "✓", "正确")) or s in ("对", "是", "true", "True"):
+        return "√"
+    if any(x in s for x in ("×", "✗", "错误")) or s in ("错", "否", "false", "False"):
+        return "×"
+    return _norm_text(s)
+
+
+def _choice_keys(value: object) -> set[str]:
+    """多选题答案归一为选项键集合；兼容 A,C / A、C / AC / 完整选项文本。"""
+    s = str(value or "").strip()
+    if re.fullmatch(r"[A-Ha-h]{2,}", s):
+        return set(s.upper())
+    return {_choice_key(p) for p in re.split(r"[,，;；、/|]+", s) if p.strip()}
+
+
+def _norm_text(value: object) -> str:
+    """去掉选项前缀、空白与标点，便于比较选项正文。"""
+    s = str(value or "").strip()
+    s = re.sub(r"^[A-Ha-h]\s*[.．、:：)）]\s*", "", s)
+    return re.sub(r"[\s，,。.;；:：、]+", "", s).lower()
+
+
+def _purge_chapter_indexes(db, chapter_ids: list[str]) -> None:
+    """清理一组章节的 FTS / 向量 / 段落块（必须在同一会话内执行）。"""
+    if not chapter_ids:
+        return
+    ph = ",".join(f":i{n}" for n in range(len(chapter_ids)))
+    bind = {f"i{n}": cid for n, cid in enumerate(chapter_ids)}
+    db.execute(text(f"DELETE FROM chapter_fts WHERE chapter_id IN ({ph})"), bind)
+    if VEC_AVAILABLE:
+        db.execute(text(
+            f"DELETE FROM vec_chunks WHERE chunk_id IN "
+            f"(SELECT id FROM chapter_chunks WHERE chapter_id IN ({ph}))"), bind)
+    db.execute(delete(ChapterChunk).where(ChapterChunk.chapter_id.in_(chapter_ids)))
 
 
 # ============ 健康检查 ============
@@ -86,12 +134,24 @@ def archive_course(course_id: str):
 
 @router.delete("/courses/{course_id}", status_code=204)
 def delete_course(course_id: str):
+    """删除课程及其全部数据；FTS/向量虚拟表不会被 FK 级联清理，需显式清理。"""
     with SessionLocal() as db:
         row = db.get(Course, course_id)
         if row is None:
             raise _err("E_NOT_FOUND", f"课程不存在: {course_id}", 404)
+        textbooks = list(db.scalars(select(Textbook).where(Textbook.course_id == course_id)))
+        chapter_ids = [c.id for c in db.scalars(
+            select(Chapter).where(Chapter.textbook_id.in_([t.id for t in textbooks])))] \
+            if textbooks else []
+        _purge_chapter_indexes(db, chapter_ids)
+        for t in textbooks:
+            try:
+                Path(t.file_path).unlink(missing_ok=True)
+            except Exception:
+                pass
         db.delete(row)
         db.commit()
+        return None
 
 
 # ============ 教材导入 ============
@@ -148,7 +208,8 @@ def _start_import_task(course_id: str, dest: Path, file_type: str,
         db.add(row)
         db.commit()
         textbook_id = row.id
-        params = {"textbook_id": textbook_id, "title": title, "passphrase": passphrase}
+        # 口令只加密存教材记录；任务参数会通过 API 暴露，禁止写入明文
+        params = {"textbook_id": textbook_id, "title": title}
         job = jobs.create("教材导入", params, lambda j: _run_import(j, textbook_id, passphrase))
         return _job_to_task(job)
 
@@ -156,10 +217,13 @@ def _start_import_task(course_id: str, dest: Path, file_type: str,
 async def _run_import(job, textbook_id: str, passphrase: str | None = None) -> str:
     with SessionLocal() as db:
         tb = db.get(Textbook, textbook_id)
+        if tb is None:
+            raise ValueError(f"教材不存在: {textbook_id}")
         tb.status = "parsing"
+        tb.error = None
         db.commit()
         try:
-            result = parsing.extract(tb.file_path, tb.file_type)
+            result = parsing.extract(tb.file_path, tb.file_type, passphrase)
         except parsing.ParseError as e:
             tb.status = "failed"
             tb.error = str(e)
@@ -172,6 +236,12 @@ async def _run_import(job, textbook_id: str, passphrase: str | None = None) -> s
         sections = parsing.build_chapter_tree(result)
         tb.structure_source = sections[0]["structure"] if sections else "auto"
         job.set_progress(25, f"结构识别：{len(sections)} 章（{tb.structure_source}）")
+        # 解析成功后再替换旧章节：解析失败时保留上一次可用内容
+        old_ids = [c.id for c in db.scalars(
+            select(Chapter).where(Chapter.textbook_id == textbook_id))]
+        if old_ids:
+            _purge_chapter_indexes(db, old_ids)
+            db.execute(delete(Chapter).where(Chapter.textbook_id == textbook_id))
         # 生成章节树：按层级栈链接父子；path 用补零序号前缀保证
         # ORDER BY path 即文档序（否则 "1.1" 字符串会排在 "1" 之前）
         chapters: list[Chapter] = []
@@ -199,11 +269,22 @@ async def _run_import(job, textbook_id: str, passphrase: str | None = None) -> s
         job.set_progress(40, "章节树已生成，待确认")
         # 分段 + 索引（FTS；向量化取决于用户是否配置嵌入模型）
         total = len(chapters)
-        for i, ch in enumerate(chapters):
-            job.check_cancelled()
-            n = await indexing.rebuild_chapter_index(ch.id, job)
-            job.set_progress(40 + (i / total) * 55,
-                             f"索引第 {i + 1}/{total} 章（{n} 段）")
+        try:
+            for i, ch in enumerate(chapters):
+                job.check_cancelled()
+                n = await indexing.rebuild_chapter_index(ch.id, job)
+                job.set_progress(40 + (i / total) * 55,
+                                 f"索引第 {i + 1}/{total} 章（{n} 段）")
+        except asyncio.CancelledError:
+            tb.status = "failed"
+            tb.error = "任务已取消"
+            db.commit()
+            raise
+        except Exception as e:
+            tb.status = "failed"
+            tb.error = f"索引失败：{e}"
+            db.commit()
+            raise
         tb.status = "parsed"
         db.commit()
         job.set_progress(100, f"导入完成：{total} 章")
@@ -238,16 +319,7 @@ def delete_textbook(textbook_id: str):
         chapter_ids = [c.id for c in db.scalars(
             select(Chapter).where(Chapter.textbook_id == textbook_id))]
         # 同一会话内清理索引（跨会话调用会因写锁失败而留下孤儿 FTS 行）
-        if chapter_ids:
-            ph = ",".join(f":i{n}" for n in range(len(chapter_ids)))
-            bind = {f"i{n}": cid for n, cid in enumerate(chapter_ids)}
-            db.execute(text(f"DELETE FROM chapter_fts WHERE chapter_id IN ({ph})"), bind)
-            if VEC_AVAILABLE:
-                db.execute(text(
-                    f"DELETE FROM vec_chunks WHERE chunk_id IN "
-                    f"(SELECT id FROM chapter_chunks WHERE chapter_id IN ({ph}))"), bind)
-            db.execute(delete(ChapterChunk).where(
-                ChapterChunk.chapter_id.in_(chapter_ids)))
+        _purge_chapter_indexes(db, chapter_ids)
         for cid in chapter_ids:
             db.execute(delete(Summary).where(Summary.chapter_id == cid))
             db.execute(delete(LessonPlan).where(LessonPlan.chapter_id == cid))
@@ -315,13 +387,14 @@ async def _run_revector(job, chapter_id: str) -> str:
 
 # ============ 搜索 ============
 @router.get("/search", response_model=list[SearchResult])
-async def search(q: str = "", scope: str | None = None, k: int = 8):
+async def search(q: str = "", scope: str | None = None, k: int = 8,
+                 course_id: str | None = None):
     if not q.strip():
         return []
     chapter_ids = None
     if scope and scope != "all":
         chapter_ids = [s for s in scope.split(",") if s]
-    return await indexing.hybrid_search(q, chapter_ids, k=k)
+    return await indexing.hybrid_search(q, chapter_ids, k=k, course_id=course_id)
 
 
 # ============ 章节总结 ============
@@ -393,7 +466,24 @@ def delete_exercise(exercise_id: str):
         row = db.get(Exercise, exercise_id)
         if row is None:
             raise _err("E_NOT_FOUND", f"题目不存在: {exercise_id}", 404)
+        paper_ids = [r[0] for r in db.execute(
+            select(PaperQuestion.paper_id).where(PaperQuestion.exercise_id == exercise_id))]
         db.delete(row)
+        db.flush()  # 触发 PaperQuestion / Answer / WrongEntry 级联删除
+        # 题目被移出试卷后，重算试卷满分与已完成答卷的总分，避免成绩单口径失真
+        for pid in paper_ids:
+            paper = db.get(Paper, pid)
+            if paper is None:
+                continue
+            paper.total_score = int(db.execute(
+                select(func.sum(PaperQuestion.score))
+                .where(PaperQuestion.paper_id == pid)).scalar() or 0)
+            for attempt in db.scalars(select(Attempt).where(
+                    Attempt.paper_id == pid,
+                    Attempt.status.in_(["submitted", "graded"]))):
+                attempt.score = int(db.execute(
+                    select(func.sum(Answer.ai_score))
+                    .where(Answer.attempt_id == attempt.id)).scalar() or 0)
         db.commit()
 
 
@@ -505,25 +595,28 @@ def submit_attempt(attempt_id: str, answers: dict[str, str]):
         attempt = db.get(Attempt, attempt_id)
         if attempt is None:
             raise _err("E_NOT_FOUND", f"作答记录不存在: {attempt_id}", 404)
+        # 幂等：重复提交时先清空上一次的答卷，避免重复计分/重复阅卷
+        db.execute(delete(Answer).where(Answer.attempt_id == attempt_id))
         total = 0
         pqs = list(db.scalars(select(PaperQuestion).where(PaperQuestion.paper_id == attempt.paper_id)
                               .order_by(PaperQuestion.order)))
         for pq in pqs:
             ex = db.get(Exercise, pq.exercise_id)
+            if ex is None:
+                continue
             raw = answers.get(ex.id, "")
             ans = Answer(id=_uid(), attempt_id=attempt_id, question_id=ex.id, content=raw)
             if ex.type in ("single", "judge"):
-                norm = lambda s: str(s).strip().split(".")[-1].strip() if "." in str(s) else str(s).strip()
-                correct = norm(raw) == norm(ex.answer)
+                # 选项键优先（A/B/C/√/×），同时兼容模型直接输出选项正文
+                correct = (_choice_key(raw) == _choice_key(ex.answer)
+                           or _norm_text(raw) == _norm_text(ex.answer))
                 ans.is_correct = correct
                 ans.ai_score = pq.score if correct else 0
                 ans.ai_feedback = {"auto": True, "correct": correct,
                                    "reference": ex.answer, "explanation": ex.explanation}
                 total += ans.ai_score
             elif ex.type == "multi":
-                picked = sorted(str(raw).split(",")) if raw else []
-                expected = sorted(str(ex.answer).split(","))
-                correct = picked == expected
+                correct = _choice_keys(raw) == _choice_keys(ex.answer)
                 ans.is_correct = correct
                 ans.ai_score = pq.score if correct else 0
                 ans.ai_feedback = {"auto": True, "correct": correct,
@@ -547,6 +640,10 @@ def submit_attempt(attempt_id: str, answers: dict[str, str]):
             gjob = jobs.create("AI 阅卷", {"attempt_id": attempt_id},
                                  lambda j: ai.run_grading(j, attempt_id))
             grading_task_id = gjob.id
+        else:
+            # 纯客观题：提交即完成阅卷，成绩单不应长期显示“待阅卷”
+            attempt.status = "graded"
+            db.commit()
         paper = db.get(Paper, attempt.paper_id)
         result = {"attempt_id": attempt.id, "score": total,
                   "total_score": paper.total_score if paper else None,
@@ -579,10 +676,15 @@ def list_attempts(course_id: str | None = None):
             n = db.execute(
                 select(func.count()).select_from(PaperQuestion)
                 .where(PaperQuestion.paper_id == a.paper_id)).scalar() or 0
+            pending = db.execute(
+                select(func.count()).select_from(Answer)
+                .where(Answer.attempt_id == a.id, Answer.is_correct.is_(None))).scalar() or 0
+            # 兼容历史纯客观题记录：status 仍是 submitted，但已无待阅卷题目
+            status = "graded" if a.status == "submitted" and pending == 0 else a.status
             out.append(AttemptOut(id=a.id, paper_id=a.paper_id,
                                   paper_title=paper.title if paper else None,
                                   score=a.score, total_score=paper.total_score if paper else 0,
-                                  status=a.status,
+                                  status=status,
                                   started_at=a.started_at.isoformat(),
                                   finished_at=a.finished_at.isoformat() if a.finished_at else None,
                                   question_count=int(n)))
@@ -649,16 +751,52 @@ def practice(course_id: str, body: dict):
         return {"attempt_id": attempt.id, "paper_id": paper.id, "questions": questions}
 
 
+@router.get("/attempts/{attempt_id}/answers")
+def get_attempt_answers(attempt_id: str):
+    """读取已保存的作答（用于刷新/重进页面时恢复）。"""
+    with SessionLocal() as db:
+        if db.get(Attempt, attempt_id) is None:
+            raise _err("E_NOT_FOUND", f"作答记录不存在: {attempt_id}", 404)
+        rows = list(db.scalars(select(Answer).where(Answer.attempt_id == attempt_id)))
+        return {"answers": {a.question_id: a.content for a in rows}}
+
+
+@router.patch("/attempts/{attempt_id}/answers")
+def save_attempt_answers(attempt_id: str, answers: dict[str, str]):
+    """自动保存作答内容（不判分）。"""
+    with SessionLocal() as db:
+        attempt = db.get(Attempt, attempt_id)
+        if attempt is None:
+            raise _err("E_NOT_FOUND", f"作答记录不存在: {attempt_id}", 404)
+        if attempt.status in ("submitted", "graded"):
+            raise _err("E_STATE", "该作答已提交，不能再修改", 409)
+        for qid, content in (answers or {}).items():
+            if db.get(Exercise, qid) is None:
+                continue
+            row = db.scalars(select(Answer).where(
+                Answer.attempt_id == attempt_id, Answer.question_id == qid)).first()
+            if row is None:
+                db.add(Answer(id=_uid(), attempt_id=attempt_id,
+                              question_id=qid, content=content or ""))
+            else:
+                row.content = content or ""
+        db.commit()
+        return {"ok": True}
+
+
 @router.get("/attempts/{attempt_id}/report")
 def attempt_report(attempt_id: str):
     with SessionLocal() as db:
         attempt = db.get(Attempt, attempt_id)
         if attempt is None:
             raise _err("E_NOT_FOUND", f"作答记录不存在: {attempt_id}", 404)
+        paper = db.get(Paper, attempt.paper_id)
         answers = list(db.scalars(select(Answer).where(Answer.attempt_id == attempt_id)))
         items = []
         for a in answers:
             ex = db.get(Exercise, a.question_id)
+            if ex is None:
+                continue
             items.append({
                 "answer_id": a.id,
                 "question_id": ex.id, "type": ex.type, "stem": ex.stem,
@@ -666,14 +804,18 @@ def attempt_report(attempt_id: str):
                 "user_answer": a.content, "is_correct": a.is_correct,
                 "ai_score": a.ai_score, "ai_feedback": a.ai_feedback,
             })
+        pending = any(a.is_correct is None for a in answers)
+        status = "graded" if attempt.status == "submitted" and not pending else attempt.status
         return {"attempt_id": attempt.id, "score": attempt.score,
-                "status": attempt.status, "items": items}
+                "total_score": paper.total_score if paper else 0,
+                "paper_title": paper.title if paper else None,
+                "status": status, "items": items}
 
 
 # ============ 阅卷（P2） ============
 @router.patch("/answers/{answer_id}/regrade")
-async def regrade_answer(answer_id: str):
-    """手动重评单题（主观题）。"""
+async def regrade_answer(answer_id: str, model_id: str | None = None):
+    """手动重评单题（主观题）；可选指定阅卷模型。"""
     with SessionLocal() as db:
         ans = db.get(Answer, answer_id)
         if ans is None:
@@ -685,7 +827,7 @@ async def regrade_answer(answer_id: str):
         pq = db.get(PaperQuestion, (attempt.paper_id, ans.question_id)) \
             if attempt else None
         max_score = pq.score if pq else 10
-        model = await ai.resolve_model(db, None, "阅卷")
+        model = await ai.resolve_model(db, model_id, "阅卷")
         question = {"stem": ex.stem, "answer": ex.answer,
                     "explanation": ex.explanation}
         result, _usage = await ai.grade_answer(model, question, ans.content,
@@ -730,8 +872,11 @@ def list_lesson_plans(chapter_id: str):
 # ============ 试卷导出（P2） ============
 @router.get("/papers/{paper_id}/export")
 def export_paper(paper_id: str, format: str = "md",
-                 include_answers: bool = False):
-    """导出试卷：md（Markdown）/ pdf（需安装 Typst）。"""
+                 include_answers: bool = False, download: bool = False):
+    """导出试卷：md（Markdown）/ pdf（需安装 Typst）。
+
+    format=pdf 且 download=true 时直接返回文件流，便于浏览器下载。
+    """
     import shutil as _shutil
     import subprocess
 
@@ -787,6 +932,10 @@ def export_paper(paper_id: str, format: str = "md",
             pdf_path = FILES_DIR / f"paper-{paper_id}.pdf"
             subprocess.run(["typst", "compile", str(typ_file),
                             str(pdf_path)], check=True, timeout=120)
+            if download:
+                safe_title = "".join(ch for ch in paper.title if ch not in '\\/:*?"<>|')
+                return FileResponse(str(pdf_path), media_type="application/pdf",
+                                    filename=f"{safe_title or 'paper'}.pdf")
             return {"format": "pdf", "path": str(pdf_path)}
 
         raise _err("E_UNSUPPORTED", f"不支持格式 .{format}（支持 md/pdf）")
@@ -970,8 +1119,9 @@ def update_model(model_id: str, body: ModelUpdate):
         if row is None:
             raise _err("E_NOT_FOUND", f"模型不存在: {model_id}", 404)
         data = body.model_dump(exclude_unset=True)
-        if "api_key" in data and data["api_key"]:
-            row.api_key_enc = encrypt(data.pop("api_key"))
+        api_key = data.pop("api_key", None)
+        if api_key:
+            row.api_key_enc = encrypt(api_key)
         for k, v in data.items():
             setattr(row, k, v)
         db.commit()
@@ -1015,7 +1165,8 @@ def list_tasks(limit: int = 50):
             .order_by(AITask.created_at.desc()).limit(limit))
         for row in rows:
             out.append(TaskOut(id=row.id, task_type=row.task_type, status=row.status,
-                               progress=row.progress, error=row.error, params=row.params,
+                               progress=row.progress, error=row.error,
+                               params=_public_task_params(row.params),
                                result_ref=row.result_ref, model_id=row.model_id,
                                tokens_in=row.tokens_in, tokens_out=row.tokens_out,
                                cost_est=row.cost_est, started_at=row.started_at,
@@ -1036,12 +1187,81 @@ def get_task(task_id: str):
             if row is None:
                 raise _err("E_NOT_FOUND", f"任务不存在: {task_id}", 404)
             return TaskOut(id=row.id, task_type=row.task_type, status=row.status,
-                           progress=row.progress, error=row.error, params=row.params,
+                           progress=row.progress, error=row.error,
+                           params=_public_task_params(row.params),
                            result_ref=row.result_ref, model_id=row.model_id,
                            tokens_in=row.tokens_in, tokens_out=row.tokens_out,
                            cost_est=row.cost_est, started_at=row.started_at,
                            finished_at=row.finished_at, created_at=row.created_at, logs=[])
     return _job_to_task(job)
+
+
+def _retry_factory(task_type: str, params: dict, model_id: str | None):
+    """按任务类型重建协程工厂（历史任务只持久化 params，需在此映射）。"""
+    if task_type == "教材导入":
+        tb_id = params.get("textbook_id")
+        if not tb_id:
+            raise _err("E_STATE", "任务缺少 textbook_id，无法重试", 409)
+        # 从教材记录解密口令；兼容旧任务 params 中可能残留的明文口令
+        passphrase = params.get("passphrase")
+        with SessionLocal() as db:
+            tb = db.get(Textbook, tb_id)
+            if tb is None:
+                raise _err("E_NOT_FOUND", f"教材不存在: {tb_id}", 404)
+            if tb.file_passphrase_enc:
+                try:
+                    passphrase = decrypt(tb.file_passphrase_enc)
+                except Exception:
+                    passphrase = None
+        return lambda j: _run_import(j, tb_id, passphrase)
+    if task_type == "章节向量化":
+        cid = params.get("chapter_id")
+        if not cid:
+            raise _err("E_STATE", "任务缺少 chapter_id，无法重试", 409)
+        return lambda j: _run_revector(j, cid)
+    if task_type == "章节总结":
+        cid = params.get("chapter_id")
+        if not cid:
+            raise _err("E_STATE", "任务缺少 chapter_id，无法重试", 409)
+        return lambda j: ai.generate_summary(j, cid, model_id)
+    if task_type == "出题":
+        return lambda j: ai.generate_exercises(j, params)
+    if task_type == "AI 阅卷":
+        aid = params.get("attempt_id")
+        if not aid:
+            raise _err("E_STATE", "任务缺少 attempt_id，无法重试", 409)
+        return lambda j: ai.run_grading(j, aid)
+    if task_type == "教案生成":
+        cid = params.get("chapter_id")
+        if not cid:
+            raise _err("E_STATE", "任务缺少 chapter_id，无法重试", 409)
+        return lambda j: ai.generate_lesson_plan(j, cid, model_id)
+    raise _err("E_UNSUPPORTED", f"任务类型「{task_type}」暂不支持重试", 400)
+
+
+@router.post("/tasks/{task_id}/retry", response_model=TaskOut, status_code=202)
+def retry_task(task_id: str):
+    """重试失败/取消的历史任务（按 task_type + params 重建）。"""
+    job = jobs.jobs.get(task_id)
+    if job is not None:
+        if job.status in ("pending", "running"):
+            raise _err("E_STATE", "任务正在运行，无法重试", 409)
+        task_type, params, model_id = job.task_type, job.params or {}, job.model_id or None
+    else:
+        with SessionLocal() as db:
+            row = db.get(AITask, task_id)
+            if row is None:
+                raise _err("E_NOT_FOUND", f"任务不存在: {task_id}", 404)
+            if row.status in ("pending", "running"):
+                raise _err("E_STATE", "任务正在运行，无法重试", 409)
+            task_type = row.task_type
+            params = row.params or {}
+            model_id = row.model_id
+    # 历史任务参数可能残留敏感字段，重试时不再写回新任务
+    params = _public_task_params(params) or {}
+    factory = _retry_factory(task_type, params, model_id)
+    newjob = jobs.create(task_type, params, factory, model_id=model_id or "")
+    return _job_to_task(newjob)
 
 
 @router.post("/tasks/{task_id}/cancel")
@@ -1082,19 +1302,79 @@ def list_prompt_templates():
                  "content": r.content, "version": r.version} for r in rows]
 
 
-@router.put("/prompt-templates/{task_type}")
-def upsert_prompt_template(task_type: str, content: str, name: str = ""):
+@router.get("/prompt-templates/{task_type}")
+def get_prompt_template(task_type: str):
+    """取某任务当前生效的提示词；未自定义时返回内置默认。"""
     from app.models import PromptTemplate
+    with SessionLocal() as db:
+        latest = db.scalars(
+            select(PromptTemplate).where(PromptTemplate.task_type == task_type)
+            .order_by(PromptTemplate.version.desc()).limit(1)).first()
+        if latest is not None:
+            return {"task_type": task_type, "content": latest.content,
+                    "name": latest.name, "version": latest.version, "builtin": False}
+        return {"task_type": task_type, "content": ai.DEFAULT_PROMPTS.get(task_type, ""),
+                "name": task_type, "version": 0, "builtin": True}
+
+
+@router.put("/prompt-templates/{task_type}")
+def upsert_prompt_template(task_type: str, body: PromptTemplateUpdate | None = None,
+                           content: str | None = None, name: str = ""):
+    """保存自定义提示词；优先 JSON body，兼容旧版 query 参数。"""
+    from app.models import PromptTemplate
+    text_content = body.content if body is not None else (content or "")
+    display_name = body.name if body is not None and body.name else name
+    if not text_content.strip():
+        raise _err("E_INVALID", "提示词内容不能为空", 400)
     with SessionLocal() as db:
         latest = db.scalars(
             select(PromptTemplate).where(PromptTemplate.task_type == task_type)
             .order_by(PromptTemplate.version.desc()).limit(1)).first()
         version = (latest.version + 1) if latest else 1
         row = PromptTemplate(id=_uid(), task_type=task_type,
-                             name=name or task_type, content=content, version=version)
+                             name=display_name or task_type,
+                             content=text_content, version=version)
         db.add(row)
         db.commit()
         return {"id": row.id, "version": version}
+
+
+# ============ 用量概览 ============
+@router.get("/usage/summary")
+def usage_summary(month: str | None = None):
+    """按自然月聚合任务与 token 用量（本地审计，无遥测）。"""
+    now = datetime.utcnow()
+    year, mon = now.year, now.month
+    if month:
+        try:
+            year, mon = (int(x) for x in month.split("-")[:2])
+            if not (1 <= mon <= 12):
+                raise ValueError
+        except Exception:
+            raise _err("E_INVALID", "month 格式应为 YYYY-MM", 400)
+    start = datetime(year, mon, 1)
+    end = datetime(year + (1 if mon == 12 else 0), 1 if mon == 12 else mon + 1, 1)
+    with SessionLocal() as db:
+        rows = list(db.scalars(select(AITask).where(
+            AITask.created_at >= start, AITask.created_at < end)))
+        by_type: dict[str, dict] = {}
+        for r in rows:
+            item = by_type.setdefault(r.task_type, {
+                "task_type": r.task_type, "count": 0,
+                "tokens_in": 0, "tokens_out": 0,
+            })
+            item["count"] += 1
+            item["tokens_in"] += r.tokens_in or 0
+            item["tokens_out"] += r.tokens_out or 0
+        return {
+            "month": f"{year:04d}-{mon:02d}",
+            "tasks": len(rows),
+            "completed": sum(1 for r in rows if r.status == "completed"),
+            "failed": sum(1 for r in rows if r.status == "failed"),
+            "tokens_in": sum(r.tokens_in or 0 for r in rows),
+            "tokens_out": sum(r.tokens_out or 0 for r in rows),
+            "by_type": sorted(by_type.values(), key=lambda x: -x["count"]),
+        }
 
 
 # ============ 设置 ============
@@ -1106,7 +1386,12 @@ def get_settings():
 
 @router.put("/settings")
 def put_settings(body: dict):
+    reindex_required = False
+    new_dim: int | None = None
     with SessionLocal() as db:
+        old_row = db.get(Setting, "embedding_dim")
+        old_raw = parse_setting(old_row.value) if old_row else ""
+        old_dim = int(old_raw) if str(old_raw).strip().isdigit() else DEFAULT_EMBEDDING_DIM
         for k, v in body.items():
             # 字符串原样存（历史数据曾被 json.dumps 包一层引号，读取侧用 parse_setting 兼容）
             val = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
@@ -1116,10 +1401,28 @@ def put_settings(body: dict):
             else:
                 row.value = val
         db.commit()
-        return {"ok": True}
+        # 向量维度变化：记录待重建，会话关闭后在独立连接执行 DDL
+        raw_dim = body.get("embedding_dim")
+        if raw_dim is not None and str(raw_dim).strip().isdigit():
+            candidate = int(str(raw_dim).strip())
+            if candidate != old_dim and 1 <= candidate <= 16384:
+                new_dim = candidate
+    if new_dim is not None:
+        recreate_vec_table(new_dim)
+        reindex_required = True
+    return {"ok": True, "reindex_required": reindex_required}
 
 
 # ============ 工具 ============
+def _public_task_params(params: dict | None) -> dict | None:
+    """任务参数对外可见：过滤可能残留的敏感字段。"""
+    if not isinstance(params, dict):
+        return params
+    return {k: v for k, v in params.items()
+            if k not in {"passphrase", "api_key", "password", "token"}}
+
+
 def _job_to_task(job) -> TaskOut:
     d = job.to_dict()
+    d["params"] = _public_task_params(d.get("params"))
     return TaskOut(**d)

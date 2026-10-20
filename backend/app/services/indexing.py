@@ -5,11 +5,11 @@
 """
 import logging
 
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
-from app.core.db import SessionLocal, VEC_AVAILABLE
+from app.core.db import DEFAULT_EMBEDDING_DIM, SessionLocal, VEC_AVAILABLE
 from app.models import Chapter, ChapterChunk, Textbook
-from app.services.llm import LLMError
+from app.services.llm import LLMError, embeddings as llm_embeddings
 
 try:
     import sqlite_vec
@@ -62,6 +62,8 @@ async def rebuild_chapter_index(chapter_id: str, job=None) -> int:
             db.execute(
                 text("INSERT INTO chapter_fts (chunk_id, chapter_id, content) VALUES (:i, :c, :t)"),
                 [{"i": r[0], "c": chapter_id, "t": _cjk_spaced(r[1])} for r in chunk_rows])
+            # 先提交 FTS：后续向量化失败时 rollback 不能把全文索引一起回滚
+            db.commit()
         else:
             logger.info("章节 %s 无正文，跳过索引", chapter_id)
 
@@ -108,21 +110,33 @@ async def rebuild_chapter_index(chapter_id: str, job=None) -> int:
 
 
 def _embedding_config(db) -> tuple[int, str | None]:
-    from app.models import Setting, parse_setting
+    from app.models import Model, Setting, parse_setting
     row = db.get(Setting, "embedding_dim")
-    raw = parse_setting(row.value) if row else ""
-    dim = int(raw) if str(raw).isdigit() else 1024
-    srow = db.get(Setting, "default_embedding_model_id")
-    return dim, (parse_setting(srow.value) if srow else None) or None
+    raw = (parse_setting(row.value) if row else "").strip().strip('"')
+    dim = int(raw) if raw.isdigit() else DEFAULT_EMBEDDING_DIM
+    # 设置页按任务保存为 default_model:向量化；兼容旧键 default_embedding_model_id
+    srow = db.get(Setting, "default_model:向量化")
+    if srow is None:
+        srow = db.get(Setting, "default_embedding_model_id")
+    model_id = (parse_setting(srow.value) if srow else None) or None
+    if model_id is None:
+        # 与设置页展示一致：未显式保存时回退到首个具备 embedding 能力的模型
+        for m in db.scalars(select(Model)):
+            if "embedding" in (m.capabilities or []):
+                model_id = m.id
+                break
+    return dim, model_id
 
 
-async def hybrid_search(query: str, chapter_ids: list[str] | None = None, k: int = 8) -> list[dict]:
-    """混合检索：FTS5 trigram ∪ 向量余弦，RRF 融合。"""
-    scope_clause, params = "", {}
-    if chapter_ids:
-        ids = ",".join(f":c{i}" for i in range(len(chapter_ids)))
-        scope_clause = f"AND chapter_id IN ({ids})"
-        params.update({f"c{i}": cid for i, cid in enumerate(chapter_ids)})
+async def hybrid_search(query: str, chapter_ids: list[str] | None = None, k: int = 8,
+                        course_id: str | None = None) -> list[dict]:
+    """混合检索：FTS5 trigram ∪ 向量余弦，RRF 融合。
+
+    chapter_ids：显式章节范围（优先）；
+    course_id：未指定章节时按课程收敛，避免跨课程检索/串库。
+    """
+    params: dict = {}
+    scope_clause = _scope_clause(chapter_ids, course_id, params)
 
     results: dict[int, dict] = {}
 
@@ -148,7 +162,7 @@ async def hybrid_search(query: str, chapter_ids: list[str] | None = None, k: int
             vec = await _query_embedding(query)
             if vec:
                 try:
-                    vrows = _vec_search(db, vec, chapter_ids, params)
+                    vrows = _vec_search(db, vec, chapter_ids, params, course_id)
                     for i, (chunk_id, _dist) in enumerate(vrows):
                         s = 1.0 / (RRF_K + i + 1)
                         if chunk_id in results:
@@ -167,11 +181,15 @@ async def hybrid_search(query: str, chapter_ids: list[str] | None = None, k: int
                 continue
             chapter = db.get(Chapter, chunk.chapter_id)
             textbook = db.get(Textbook, chapter.textbook_id) if chapter else None
+            if chapter is None or textbook is None:
+                continue  # 章节/教材已删除，避免返回不可定位的孤儿结果
             out.append({
                 "chunk_id": chunk.id,
                 "chapter_id": chunk.chapter_id,
-                "chapter_title": chapter.title if chapter else "?",
-                "textbook_title": textbook.title if textbook else "?",
+                "chapter_title": chapter.title,
+                "textbook_id": textbook.id,
+                "textbook_title": textbook.title,
+                "course_id": textbook.course_id,
                 "page_no": chunk.page_no,
                 "para_no": chunk.para_no,
                 "snippet": chunk.content[:200],
@@ -180,10 +198,25 @@ async def hybrid_search(query: str, chapter_ids: list[str] | None = None, k: int
     return out
 
 
-def _vec_search(db, vec, chapter_ids, params) -> list:
+def _scope_clause(chapter_ids: list[str] | None, course_id: str | None,
+                  params: dict) -> str:
+    """构造检索范围 SQL（FTS 表的 chapter_id 为 UNINDEXED 列，可直接过滤）。"""
+    if chapter_ids:
+        ids = ",".join(f":c{i}" for i in range(len(chapter_ids)))
+        params.update({f"c{i}": cid for i, cid in enumerate(chapter_ids)})
+        return f"AND chapter_id IN ({ids})"
+    if course_id:
+        params["scope_course_id"] = course_id
+        return ("AND chapter_id IN (SELECT c.id FROM chapters c "
+                "JOIN textbooks t ON c.textbook_id = t.id "
+                "WHERE t.course_id = :scope_course_id)")
+    return ""
+
+
+def _vec_search(db, vec, chapter_ids, params, course_id: str | None = None) -> list:
     """执行 sqlite-vec 余弦检索。向量以 blob 绑定。"""
-    from app.core.db import EMBEDDING_DIM
-    if len(vec) != EMBEDDING_DIM:
+    dim, _model_id = _embedding_config(db)
+    if len(vec) != dim:
         raise ValueError("查询向量维度与索引不符")
     if _serialize is None:
         raise RuntimeError("sqlite-vec 序列化不可用")
@@ -192,6 +225,11 @@ def _vec_search(db, vec, chapter_ids, params) -> list:
     if chapter_ids:
         ids = ",".join(f":c{i}" for i in range(len(chapter_ids)))
         sql += f"AND v.chunk_id IN (SELECT id FROM chapter_chunks WHERE chapter_id IN ({ids})) "
+    elif course_id:
+        sql += ("AND v.chunk_id IN (SELECT cc.id FROM chapter_chunks cc "
+                "JOIN chapters c ON cc.chapter_id = c.id "
+                "JOIN textbooks t ON c.textbook_id = t.id "
+                "WHERE t.course_id = :scope_course_id) ")
     sql += "ORDER BY v.distance LIMIT :k"
     return db.execute(text(sql),
                       {**params, "e": _serialize(vec), "k": VEC_K}).all()

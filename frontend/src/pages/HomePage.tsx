@@ -13,17 +13,20 @@ export default function HomePage({ go }: Props) {
   const { courses, course, setCourseId } = useContext(CourseContext)
   const [textbooks, setTextbooks] = useState<Textbook[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
+  const [usage, setUsage] = useState<{ tokens_in: number; tokens_out: number; tasks: number } | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
     ;(async () => {
       try {
-        const [t, j] = await Promise.all([
+        const [t, j, u] = await Promise.all([
           api.get<Textbook[]>('/api/v1/textbooks'),
           api.get<Task[]>('/api/v1/tasks?limit=20'),
+          api.get<{ tokens_in: number; tokens_out: number; tasks: number }>('/api/v1/usage/summary'),
         ])
         setTextbooks(t)
         setTasks(j)
+        setUsage(u)
       } catch (e) {
         setError(String(e))
         toast('无法连接本地服务：' + String(e))
@@ -52,6 +55,10 @@ export default function HomePage({ go }: Props) {
         <div className="card stat"><div className="num">{textbooks.length}</div><div className="lbl">教材</div></div>
         <div className="card stat"><div className="num">{textbooks.reduce((s, t) => s + t.word_count, 0).toLocaleString()}</div><div className="lbl">总字数</div></div>
         <div className="card stat"><div className="num">{tasks.filter((t) => t.status === 'running').length}</div><div className="lbl">运行中任务</div></div>
+        <div className="card stat">
+          <div className="num">{usage ? (usage.tokens_in + usage.tokens_out).toLocaleString() : '—'}</div>
+          <div className="lbl">本月 token · {usage?.tasks ?? 0} 个任务</div>
+        </div>
       </div>
       <div className="page-head" style={{ marginTop: 22 }}>
         <h1 style={{ fontSize: 16 }}>最近课程</h1>

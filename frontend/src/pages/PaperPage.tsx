@@ -1,5 +1,5 @@
-import { useContext, useEffect, useState } from 'react'
-import { api, openSSE } from '../api'
+import { useContext, useEffect, useState, type ReactNode } from 'react'
+import { api, fileUrl, openSSE } from '../api'
 import { ToastContext } from '../App'
 import type { NavTarget } from '../App'
 import { QTYPE_LABEL, type Chapter, type Exercise, type ModelDef, type Paper, type Task } from '../types'
@@ -54,6 +54,15 @@ export default function PaperPage({ go, courseId }: Props) {
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [deleting, setDeleting] = useState<Paper | null>(null)
+  const [durationMin, setDurationMin] = useState(30)
+  const [publishNow, setPublishNow] = useState(true)
+  const [createTab, setCreateTab] = useState<'ai' | 'bank'>('ai')
+  const [bankQuestions, setBankQuestions] = useState<Exercise[]>([])
+  const [bankLoading, setBankLoading] = useState(false)
+  const [selectedBank, setSelectedBank] = useState<Set<string>>(new Set())
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportAnswers, setExportAnswers] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   // 新建试卷：选教材范围 + AI 生成
   const [textbooks, setTextbooks] = useState<{ id: string; title: string }[]>([])
@@ -186,6 +195,7 @@ export default function PaperPage({ go, courseId }: Props) {
               </button>
             </label>
             <button className="btn btn-sm" onClick={() => window.print()}>🖨️ 打印</button>
+            <button className="btn btn-sm" onClick={() => setExportOpen(true)}>⬇️ 导出</button>
             <button className="btn btn-primary" onClick={startQuiz}>去测验</button>
           </div>
           <div style={{ maxWidth: '860px', margin: '0 auto' }}>
@@ -232,12 +242,46 @@ export default function PaperPage({ go, courseId }: Props) {
         </>
       )}
 
+      {exportOpen && viewing && (
+        <div className="modal-mask" onClick={() => setExportOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>导出试卷</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setExportOpen(false)}>关闭</button>
+            </div>
+            <div className="modal-body">
+              <div className="field">
+                <label>格式</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn" disabled={exporting} onClick={() => exportPaper('md')}>Markdown (.md)</button>
+                  <button className="btn btn-primary" disabled={exporting} onClick={() => exportPaper('pdf')}>PDF（需 Typst）</button>
+                </div>
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <input type="checkbox" checked={exportAnswers} onChange={(e) => setExportAnswers(e.target.checked)} />
+                附带参考答案与解析
+              </label>
+            </div>
+            <div className="modal-foot">
+              <span className="hint">PDF 由本地 Typst 渲染，不上传云端</span>
+              <button className="btn btn-ghost" onClick={() => setExportOpen(false)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {creating && (
         <div className="modal-mask" onClick={closeCreate}>
           <div className="paper-create-modal" onClick={(e) => e.stopPropagation()}>
             <div className="pcm-head">
-              <h3>新建试卷 · AI 生成</h3>
+              <h3>新建试卷</h3>
               <button className="btn btn-ghost btn-sm" onClick={closeCreate}>关闭</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, padding: '0 24px 12px' }}>
+              <button className={`btn btn-sm ${createTab === 'ai' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setCreateTab('ai')}>⚡ AI 生成</button>
+              <button className={`btn btn-sm ${createTab === 'bank' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => { setCreateTab('bank'); void loadBankQuestions() }}>🗂️ 从题库组卷</button>
             </div>
 
             <div className="pcm-section">
@@ -245,6 +289,7 @@ export default function PaperPage({ go, courseId }: Props) {
               <input className="pcm-input" value={paperTitle} onChange={(e) => setPaperTitle(e.target.value)} />
             </div>
 
+            {createTab === 'ai' && (<>
             <div className="pcm-section">
               <label className="pcm-label">选择出题范围（教材章节，可多选）</label>
               <div className="tb-multi">
@@ -269,59 +314,7 @@ export default function PaperPage({ go, courseId }: Props) {
                           chaptersByTb[tb.id].length === 0 ? (
                             <div className="pcm-empty" style={{ padding: 10 }}>暂无章节</div>
                           ) : (
-                            chaptersByTb[tb.id]
-                              .filter((c) => c.level === 1)
-                              .map((ch) => {
-                                const kids = chaptersByTb[tb.id].filter((c) => c.parent_id === ch.id)
-                                return (
-                                  <div key={ch.id} className="chapter-group">
-                                    <div
-                                      className="chapter-row chapter-row-l1"
-                                      onClick={() => toggleChapterExpand(ch.id)}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedChapters.has(ch.id)}
-                                        onChange={(e) => {
-                                          e.stopPropagation()
-                                          toggleChapterSelection(ch.id)
-                                        }}
-                                        onClick={(e) => e.stopPropagation()}
-                                      />
-                                      <span className="chapter-title">{ch.title}</span>
-                                      {kids.length > 0 && (
-                                        <span className="chapter-arrow">
-                                          {expandedChapters.has(ch.id) ? '▲' : '▼'}
-                                        </span>
-                                      )}
-                                      <span className="chapter-meta">
-                                        {ch.page_start != null ? `p.${ch.page_start}` : ''} · {ch.word_count} 字
-                                      </span>
-                                    </div>
-                                    {expandedChapters.has(ch.id) && kids.map((sub) => (
-                                      <div
-                                        key={sub.id}
-                                        className="chapter-row chapter-row-sub"
-                                        onClick={() => toggleChapterSelection(sub.id)}
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={selectedChapters.has(sub.id)}
-                                          onChange={(e) => {
-                                            e.stopPropagation()
-                                            toggleChapterSelection(sub.id)
-                                          }}
-                                          onClick={(e) => e.stopPropagation()}
-                                        />
-                                        <span className="chapter-title">{sub.title}</span>
-                                        <span className="chapter-meta">
-                                          {sub.page_start != null ? `p.${sub.page_start}` : ''} · {sub.word_count} 字
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )
-                              })
+                            renderChapterRows(chaptersByTb[tb.id], null, 0)
                           )
                         ) : (
                           <div className="chapter-loading">加载中…</div>
@@ -338,16 +331,17 @@ export default function PaperPage({ go, courseId }: Props) {
               <label className="pcm-label">题型与数量</label>
               <div className="qtype-table">
                 <div className="qtype-table-row qtype-table-header">
-                  {['single', 'multi', 'judge', 'fill', 'short'].map((t) => (
+                  {['single', 'multi', 'judge', 'fill', 'short', 'calc', 'essay'].map((t) => (
                     <div key={t} className="qtype-table-cell">
                       {{
-                        single: '单选题', multi: '多选题', judge: '判断题', fill: '填空题', short: '简答题',
+                        single: '单选题', multi: '多选题', judge: '判断题', fill: '填空题',
+                        short: '简答题', calc: '计算题', essay: '论述题',
                       }[t]}
                     </div>
                   ))}
                 </div>
                 <div className="qtype-table-row">
-                  {['single', 'multi', 'judge', 'fill', 'short'].map((t) => (
+                  {['single', 'multi', 'judge', 'fill', 'short', 'calc', 'essay'].map((t) => (
                     <div key={t} className="qtype-table-cell">
                       <input
                         type="number"
@@ -363,30 +357,112 @@ export default function PaperPage({ go, courseId }: Props) {
               </div>
             </div>
 
-            <div className="pcm-actions">
-              <div className="pcm-model-inline">
-                <label className="pcm-label-sm">模型</label>
-                <select
-                  className="model-select-inline"
-                  value={spec.model_id || ''}
-                  onChange={(e) => setSpec((s) => ({ ...s, model_id: e.target.value }))}
-                >
-                  {models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} · {m.provider}
-                    </option>
+            <div className="pcm-section">
+              <label className="pcm-label">生成参数</label>
+              <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  难度
+                  <select value={spec.difficulty} onChange={(e) => setSpec((s) => ({ ...s, difficulty: +e.target.value }))}>
+                    {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} · {'★'.repeat(n)}</option>)}
+                  </select>
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="checkbox" checked={spec.explain}
+                    onChange={(e) => setSpec((s) => ({ ...s, explain: e.target.checked }))} />
+                  生成解析
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="checkbox" checked={spec.answer}
+                    onChange={(e) => {
+                      setSpec((s) => ({ ...s, answer: e.target.checked }))
+                      if (!e.target.checked) setPublishNow(false)
+                    }} />
+                  生成参考答案
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', opacity: spec.answer ? 1 : 0.55 }}>
+                  <input type="checkbox" checked={publishNow} disabled={!spec.answer}
+                    onChange={(e) => setPublishNow(e.target.checked)} />
+                  生成后自动发布到题库并组卷
+                </label>
+                {!spec.answer && <span className="hint">不生成答案时仅保存草稿，需在题库补全答案后再发布</span>}
+              </div>
+            </div>
+
+            </>)}
+
+            {createTab === 'bank' && (
+              <div className="pcm-section">
+                <label className="pcm-label">选择已发布题目（{selectedBank.size} 题已选）</label>
+                <div style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+                  {bankLoading && <div className="pcm-empty">加载中…</div>}
+                  {!bankLoading && bankQuestions.length === 0 && (
+                    <div className="pcm-empty">题库暂无已发布题目，请先用 AI 生成或到题库发布</div>
+                  )}
+                  {bankQuestions.map((q) => (
+                    <label key={q.id} style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 9, padding: '9px 12px',
+                      borderBottom: '1px solid var(--border)', cursor: 'pointer', fontSize: 13,
+                    }}>
+                      <input type="checkbox" checked={selectedBank.has(q.id)}
+                        onChange={() => setSelectedBank((prev) => {
+                          const next = new Set(prev)
+                          next.has(q.id) ? next.delete(q.id) : next.add(q.id)
+                          return next
+                        })} />
+                      <span style={{ flex: 1 }}>
+                        <span className={`qtype ${q.type}`} style={{ marginRight: 8 }}>{QTYPE_LABEL[q.type]}</span>
+                        {q.stem}
+                      </span>
+                      <span className="tag">难度 {q.difficulty}</span>
+                    </label>
                   ))}
-                </select>
+                </div>
+              </div>
+            )}
+
+            <div className="pcm-actions">
+              {createTab === 'ai' && (
+                <div className="pcm-model-inline">
+                  <label className="pcm-label-sm">模型</label>
+                  <select
+                    className="model-select-inline"
+                    value={spec.model_id || ''}
+                    onChange={(e) => setSpec((s) => ({ ...s, model_id: e.target.value }))}
+                  >
+                    {models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} · {m.provider}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="pcm-model-inline">
+                <label className="pcm-label-sm">时长</label>
+                <input type="number" min={0} max={300} value={durationMin}
+                  onChange={(e) => setDurationMin(Math.max(0, +e.target.value || 0))}
+                  style={{ width: 74 }} />
+                <span style={{ fontSize: 12, color: 'var(--faint)' }}>分钟</span>
               </div>
               <div style={{ marginLeft: 'auto' }}></div>
               <button className="btn btn-ghost" onClick={closeCreate}>取消</button>
-              <button
-                className="btn btn-primary"
-                disabled={generating || !spec.model_id || selectedChapters.size === 0 || !paperTitle}
-                onClick={startGenerate}
-              >
-                {generating ? '⏳ 生成中…' : '⚡ 生成试卷'}
-              </button>
+              {createTab === 'ai' ? (
+                <button
+                  className="btn btn-primary"
+                  disabled={generating || !spec.model_id || selectedChapters.size === 0 || !paperTitle}
+                  onClick={startGenerate}
+                >
+                  {generating ? '⏳ 生成中…' : '⚡ 生成试卷'}
+                </button>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  disabled={!paperTitle || selectedBank.size === 0}
+                  onClick={createFromBank}
+                >
+                  用 {selectedBank.size} 道题组卷
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -402,6 +478,10 @@ export default function PaperPage({ go, courseId }: Props) {
     setExpandedChapters(new Set())
     setExpandedTb(null)
     setChaptersByTb({})
+    setCreateTab('ai')
+    setSelectedBank(new Set())
+    setDurationMin(30)
+    setPublishNow(true)
     ;(async () => {
       try {
         const [t, m] = await Promise.all([
@@ -418,7 +498,40 @@ export default function PaperPage({ go, courseId }: Props) {
     })()
     setCreating(true)
   }
-  function closeCreate() { setCreating(false) }
+  function closeCreate() {
+    if (generating) { toast('试卷生成中，请稍候…'); return }
+    setCreating(false)
+  }
+
+  async function loadBankQuestions() {
+    if (!courseId || bankLoading) return
+    setBankLoading(true)
+    try {
+      setBankQuestions(await api.get<Exercise[]>(
+        `/api/v1/exercises?course_id=${courseId}&status=published`))
+    } catch (e) {
+      toast('加载题库失败：' + (e as Error).message)
+    } finally { setBankLoading(false) }
+  }
+
+  async function createFromBank() {
+    if (!paperTitle.trim()) return toast('请填写试卷名')
+    if (selectedBank.size === 0) return toast('请至少选择一道题')
+    try {
+      const p = await api.post<{ id: string }>('/api/v1/papers', {
+        course_id: courseId,
+        title: paperTitle.trim(),
+        exercise_ids: [...selectedBank],
+        duration_min: durationMin,
+        shuffle: false,
+      })
+      setCreating(false)
+      setPaperTitle('')
+      await loadPapers()
+      openView(p.id)
+      toast(`试卷已创建（${selectedBank.size} 题）`)
+    } catch (e) { toast('组卷失败：' + (e as Error).message) }
+  }
 
   async function loadChapters(textbookId: string) {
     if (chaptersByTb[textbookId]) return
@@ -512,6 +625,44 @@ export default function PaperPage({ go, courseId }: Props) {
     setSelectedChapters(next)
   }
 
+  /** 递归渲染任意层级章节（多级标题 / EPUB 嵌套），勾选联动由 toggleChapterSelection 负责。 */
+  function renderChapterRows(rows: Chapter[], parentId: string | null, depth: number): ReactNode {
+    return rows.filter((c) => c.parent_id === parentId).map((ch) => {
+      const kids = rows.filter((c) => c.parent_id === ch.id)
+      const selected = selectedChapters.has(ch.id)
+      return (
+        <div key={ch.id} className="chapter-group">
+          <div
+            className={`chapter-row ${depth === 0 ? 'chapter-row-l1' : 'chapter-row-sub'} ${selected ? 'selected' : ''}`}
+            style={depth > 1 ? { paddingLeft: 34 + (depth - 1) * 18 } : undefined}
+            onClick={() => toggleChapterSelection(ch.id)}
+          >
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={(e) => {
+                e.stopPropagation()
+                toggleChapterSelection(ch.id)
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+            <span className="chapter-title">{ch.title}</span>
+            {kids.length > 0 && (
+              <span className="chapter-arrow" style={{ cursor: 'pointer', marginLeft: 6 }}
+                onClick={(e) => { e.stopPropagation(); toggleChapterExpand(ch.id) }}>
+                {expandedChapters.has(ch.id) ? '▲' : '▼'}
+              </span>
+            )}
+            <span className="chapter-meta">
+              {ch.page_start != null ? `p.${ch.page_start}` : ''} · {ch.word_count} 字
+            </span>
+          </div>
+          {kids.length > 0 && expandedChapters.has(ch.id) && renderChapterRows(rows, ch.id, depth + 1)}
+        </div>
+      )
+    })
+  }
+
   function toggleChapterExpand(id: string) {
     setExpandedChapters((prev) => {
       const next = new Set(prev)
@@ -560,17 +711,26 @@ export default function PaperPage({ go, courseId }: Props) {
         model_id: spec.model_id,
       })
       toast('出题任务已提交，流式跟踪中…')
+      let finished = false
       const es = openSSE(`/api/v1/tasks/${task.id}/events`, (ev, data) => {
         if (ev === 'task.done') {
+          finished = true
           es.close()
-          setGenerating(false)
-          handleGenerateDone(beforeDraftIds)
+          // 发布/组卷完成前保持 generating，避免用户提前关闭弹窗
+          handleGenerateDone(beforeDraftIds).finally(() => setGenerating(false))
         }
         if (ev === 'task.error') {
+          finished = true
           es.close()
           setGenerating(false)
           toast('生成失败：' + (data.error || '未知错误'))
         }
+      }, () => {
+        if (finished) return
+        finished = true
+        es.close()
+        setGenerating(false)
+        toast('生成任务连接中断，请到任务中心查看结果')
       })
     } catch (e) {
       setGenerating(false)
@@ -584,6 +744,14 @@ export default function PaperPage({ go, courseId }: Props) {
       const newDrafts = drafts.filter((q) => !beforeDraftIds.includes(q.id))
       if (newDrafts.length === 0) return toast('未生成到题目')
 
+      if (!publishNow) {
+        setCreating(false)
+        toast(`已生成 ${newDrafts.length} 道草稿，可在题库审校后发布`)
+        loadPapers()
+        go('bank')
+        return
+      }
+
       // 全部发布到题库
       for (const q of newDrafts) {
         await api.patch(`/api/v1/exercises/${q.id}`, { status: 'published' })
@@ -591,7 +759,7 @@ export default function PaperPage({ go, courseId }: Props) {
 
       const p = await api.post<{ id: string }>('/api/v1/papers', {
         course_id: courseId, title: paperTitle,
-        exercise_ids: newDrafts.map((q) => q.id), duration_min: 30, shuffle: true,
+        exercise_ids: newDrafts.map((q) => q.id), duration_min: durationMin, shuffle: true,
       })
       setCreating(false)
       setPaperTitle('')
@@ -601,6 +769,30 @@ export default function PaperPage({ go, courseId }: Props) {
       setGenerating(false)
       toast('创建试卷失败：' + (e as Error).message)
     }
+  }
+
+  async function exportPaper(format: 'md' | 'pdf') {
+    if (!viewing) return
+    setExporting(true)
+    try {
+      const path = `/api/v1/papers/${viewing.id}/export?format=${format}&include_answers=${exportAnswers}`
+      if (format === 'pdf') {
+        window.open(await fileUrl(path + '&download=true'), '_blank')
+        toast('PDF 导出已开始（如未下载，请检查浏览器拦截）')
+      } else {
+        const r = await api.get<{ content: string }>(path)
+        const blob = new Blob([r.content], { type: 'text/markdown;charset=utf-8' })
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = `${viewing.title}.md`
+        a.click()
+        URL.revokeObjectURL(a.href)
+        toast('Markdown 已导出')
+      }
+      setExportOpen(false)
+    } catch (e) {
+      toast('导出失败：' + (e as Error).message)
+    } finally { setExporting(false) }
   }
 
   async function openView(id: string) {

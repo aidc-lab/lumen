@@ -28,6 +28,7 @@ export default function QAPage({ courseId }: { courseId: string }) {
   const [streaming, setStreaming] = useState(false)
   const [models, setModels] = useState<{ id: string; name: string }[]>([])
   const [modelId, setModelId] = useState<string | null>(null)
+  const [mode, setMode] = useState<'direct' | 'socratic' | 'review'>('direct')
   const [refs, setRefs] = useState<RefItem[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
@@ -50,6 +51,9 @@ export default function QAPage({ courseId }: { courseId: string }) {
   // 加载会话、模型与教材目录（用于 @ 引用）
   useEffect(() => {
     if (!courseId) { setSessions([]); setMsgs([]); setSessionId(null); return }
+    setSessionId(null)
+    setMsgs([])
+    setMode('direct')
     ;(async () => {
       try {
         const [list, modelsRes, texts] = await Promise.all([
@@ -58,54 +62,94 @@ export default function QAPage({ courseId }: { courseId: string }) {
           api.get<Textbook[]>(`/api/v1/textbooks?course_id=${courseId}`),
         ])
         setSessions(list)
-        setModels(modelsRes.filter((m) => m.capabilities.includes('text')))
-        if (modelsRes.length) setModelId(modelsRes[0].id)
+        const textModels = modelsRes.filter((m) => m.capabilities.includes('text'))
+        setModels(textModels)
+        // 只从文本模型里选，避免默认选中 embedding / rerank 模型
+        setModelId(textModels[0]?.id ?? null)
         const loaded = await Promise.all(
           texts.map(async (t) => ({
             ...t,
             chapters: await api.get<Chapter[]>(`/api/v1/textbooks/${t.id}/chapters`),
           })))
         setTextbooks(loaded)
-        if (list[0]) await openSession(list[0].id)
+        if (list[0]) await openSession(list[0].id, list[0])
       } catch (e) { toast('加载失败：' + (e as Error).message) }
     })().catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId, toast])
 
-  async function openSession(id: string) {
+  async function openSession(id: string, known?: SessionT) {
+    if (streaming) return
     setSessionId(id)
-    const history = await api.get<Message[]>(`/api/v1/sessions/${id}/messages`)
-    setMsgs(history.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      text: m.content,
-      citations: m.citations?.list ?? [],
-      pendingCite: false,
-      refs: (m.citations?.refs as string[] | undefined) ?? [],
-    })))
+    const s = known ?? sessions.find((x) => x.id === id)
+    if (s?.mode) setMode(s.mode as 'direct' | 'socratic' | 'review')
+    try {
+      const history = await api.get<Message[]>(`/api/v1/sessions/${id}/messages`)
+      setMsgs(history.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        text: m.content,
+        citations: m.citations?.list ?? [],
+        pendingCite: false,
+        refs: (m.citations?.refs as string[] | undefined) ?? [],
+      })))
+    } catch (e) { toast('加载会话失败：' + (e as Error).message) }
   }
 
   async function newSession() {
-    if (!courseId) return
+    if (!courseId || streaming) return null
     const s = await api.post<SessionT>('/api/v1/sessions', {
-      title: `会话 ${sessions.length + 1}`, course_id: courseId, scope: {}, mode: 'direct',
+      title: `会话 ${sessions.length + 1}`, course_id: courseId, scope: {}, mode,
     })
     setSessionId(s.id)
+    setMode((s.mode as 'direct' | 'socratic' | 'review') ?? 'direct')
     setMsgs([])
     setSessions(await api.get<SessionT[]>(`/api/v1/sessions?course_id=${courseId}`))
+    return s.id
+  }
+
+  /** 没有历史会话时，首问也要能自动建会话。 */
+  async function ensureSession(): Promise<string | null> {
+    if (sessionId) return sessionId
+    if (!courseId) return null
+    try {
+      return await newSession()
+    } catch (e) {
+      toast('创建会话失败：' + (e as Error).message)
+      return null
+    }
+  }
+
+  async function changeMode(next: 'direct' | 'socratic' | 'review') {
+    setMode(next)
+    if (!sessionId) return
+    try {
+      await api.patch(`/api/v1/sessions/${sessionId}`, { mode: next })
+      setSessions((list) => list.map((s) => (s.id === sessionId ? { ...s, mode: next } : s)))
+    } catch (e) { toast('切换模式失败：' + (e as Error).message) }
   }
 
   async function send() {
     const text = input.trim()
-    if (!text || streaming || !sessionId) return
+    if (!text || streaming) return
+    const sid = await ensureSession()
+    if (!sid) return
     closePicker()
     const refLabels = refs.map((r) => (r.whole ? `《${r.textbook}》(全本)` : `《${r.textbook}》${r.chapter}`))
     const chapter_ids = refs.flatMap((r) => r.ids)
+    const isFirst = msgs.length === 0
     setInput('')
     setRefs([]) // 发送后清空引用
     if (taRef.current) taRef.current.style.height = 'auto'
     setMsgs((m) => [...m, { role: 'user', text, citations: [], pendingCite: false, refs: refLabels }])
     setStreaming(true)
     setMsgs((m) => [...m, { role: 'assistant', text: '', citations: [], pendingCite: false }])
+    // 首问后把默认会话名替换成问题摘要，便于历史查找
+    if (isFirst) {
+      const title = text.length > 24 ? text.slice(0, 24) + '…' : text
+      api.patch(`/api/v1/sessions/${sid}`, { title }).then(() => {
+        setSessions((list) => list.map((s) => (s.id === sid ? { ...s, title } : s)))
+      }).catch(() => {})
+    }
 
     let handle: { close: () => void } | null = null
     let finished = false
@@ -140,7 +184,7 @@ export default function QAPage({ courseId }: { courseId: string }) {
 
     try {
       handle = await openPostSSE(
-        `/api/v1/sessions/${sessionId}/messages`,
+        `/api/v1/sessions/${sid}/messages`,
         { content: text, model_id: modelId ?? undefined, chapter_ids: chapter_ids.length ? chapter_ids : undefined },
         onEv,
         () => setStreaming(false),
@@ -334,6 +378,17 @@ export default function QAPage({ courseId }: { courseId: string }) {
                 disabled={streaming}
               >
                 {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+              <select
+                className="composer-model"
+                value={mode}
+                onChange={(e) => changeMode(e.target.value as 'direct' | 'socratic' | 'review')}
+                disabled={streaming}
+                title="答疑模式"
+              >
+                <option value="direct">直接回答</option>
+                <option value="socratic">苏格拉底引导</option>
+                <option value="review">批改思路</option>
               </select>
               <span className="composer-hint">Enter 发送 · Shift+Enter 换行</span>
               <button className="composer-send" onClick={send} disabled={streaming || !input.trim()} title="发送">↑</button>
